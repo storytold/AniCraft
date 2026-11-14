@@ -9,11 +9,12 @@
 pub mod edges;
 pub mod import;
 pub mod text;
+pub mod video;
 /// The shared XML reader (`anicraft-xml`), under its old path.
 pub use anicraft_xml as xml;
 pub mod zip;
 
-pub use import::{MAX_FLA_BYTES, Report, XflError, import_fla, import_fla_with_fonts, import_path, import_with, import_with_fonts};
+pub use import::{MAX_FLA_BYTES, MAX_NAMED, Report, XflError, import_fla, import_fla_with_fonts, import_path, import_with, import_with_fonts};
 
 #[cfg(test)]
 mod tests;

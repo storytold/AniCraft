@@ -5,7 +5,7 @@
 #   $DIST/anicraft-<version>-linux-<arch>.AppImage.zsync  delta updates (needs zsyncmake)
 #   $DIST/anicraft-<version>-linux-<arch>.deb             Debian, Ubuntu, Mint, Pop!_OS, ...
 #   $DIST/anicraft-<version>-linux-<arch>.rpm             Fedora, openSUSE, RHEL, ...
-#   $DIST/anicraft-<version>-linux-<arch>.tar.gz          plain FHS-style tree (bin/, share/)
+#   $DIST/anicraft-<version>-linux-<arch>.tar.gz          plain FHS-style tree (bin/, share/), portable
 #
 # Every format installs the desktop entry, the AppStream metainfo, the hicolor icons and the
 # MIME types (.anicraft is AniCraft's; .fla and .xfl open as an untitled import).
@@ -82,10 +82,14 @@ has() { case " $FORMATS " in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
 
 # ---- .tar.gz ------------------------------------------------------------------------------------
 # Unpacks to anicraft-<version>-linux-<arch>/{bin,share}; the Flatpak and Arch packages are made
-# from this tarball by the shared release workflow.
+# from this tarball by the shared release workflow (they copy bin/ and share/ only). The
+# anicraft-portable marker at its top makes the unpacked folder a portable copy (ADR 0094):
+# settings go to data/ beside bin/.
 if has tar; then
   mkdir -p "$WORK/tar"
   cp -R "$STAGE/usr" "$WORK/tar/$BASENAME"
+  printf '%s\n' "This copy of AniCraft is portable: it keeps its settings in the data folder here (ADR 0094)." \
+    "Delete this file to use ~/.config/anicraft instead." >"$WORK/tar/$BASENAME/anicraft-portable"
   tar -C "$WORK/tar" -czf "$DIST/$BASENAME.tar.gz" "$BASENAME"
   echo "wrote $DIST/$BASENAME.tar.gz"
 fi

@@ -84,14 +84,15 @@ fn windows_icon() {
     }
 }
 
-/// The desktop-only features (ADR 0036) as cfgs: `gpu_stage` and `sound_output` are on when
-/// their feature is and the target isn't the web, so `cargo build --target wasm32-unknown-unknown`
-/// works with the default features and the web build draws on the CPU, silently.
+/// The features as cfgs: `gpu_stage` is on when its feature is and the target isn't the web
+/// (ADR 0036), so `cargo build --target wasm32-unknown-unknown` works with the default features
+/// and the web build draws on the CPU; `sound_output` is on when its feature is, on the web too
+/// (Web Audio, ADR 0095).
 fn native_features() {
     println!("cargo::rustc-check-cfg=cfg(gpu_stage, sound_output)");
     let web = std::env::var("CARGO_CFG_TARGET_ARCH").is_ok_and(|a| a == "wasm32");
-    for (feature, cfg) in [("CARGO_FEATURE_GPU_STAGE", "gpu_stage"), ("CARGO_FEATURE_SOUND_OUTPUT", "sound_output")] {
-        if std::env::var_os(feature).is_some() && !web {
+    for (feature, cfg, desktop_only) in [("CARGO_FEATURE_GPU_STAGE", "gpu_stage", true), ("CARGO_FEATURE_SOUND_OUTPUT", "sound_output", false)] {
+        if std::env::var_os(feature).is_some() && !(web && desktop_only) {
             println!("cargo::rustc-cfg={cfg}");
         }
     }

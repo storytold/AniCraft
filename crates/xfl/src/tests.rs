@@ -32,7 +32,7 @@ const DOC: &str = r##"<DOMDocument xmlns="http://ns.adobe.com/xfl/2008/" width="
             </DOMFrame>
           </frames>
         </DOMLayer>
-        <DOMLayer name="Ground" locked="true">
+        <DOMLayer name="Ground" locked="true" heightMultiplier="2">
           <frames>
             <DOMFrame index="0" duration="15">
               <elements>
@@ -88,8 +88,9 @@ fn stage_layers_frames_and_tweens() {
     assert_eq!(ball.keyframes.len(), 2);
     assert_eq!((ball.keyframes[0].start, ball.keyframes[0].duration), (0, 10));
     assert_eq!(ball.keyframes[0].label, "start");
-    assert!(matches!(ball.keyframes[0].tween.map(|t| t.easing), Some(anicraft_doc::Easing::Classic(e)) if e == -50.0));
+    assert!(matches!(ball.keyframes[0].tween.as_ref().map(|t| t.easing.clone()), Some(anicraft_doc::Easing::Classic(e)) if e == -50.0));
     assert!(doc.timeline(0).layers[1].locked);
+    assert_eq!((doc.timeline(0).layers[0].height(), doc.timeline(0).layers[1].height()), (1, 2), "Layer Properties height");
     assert_eq!(doc.timeline(0).layers[2].kind, LayerKind::Guide);
     assert_eq!(doc.timeline(0).frame_count(), 15);
     assert_eq!(doc.frame_count(), 16, "the movie: scene 1, then the one-frame scene 2");
@@ -150,8 +151,12 @@ fn symbols_instances_and_the_tween_between_them() {
     let sym = &doc.library[0];
     assert_eq!((sym.name.as_str(), sym.kind), ("Ball", SymbolKind::MovieClip));
     let inst = &doc.timeline(0).layers[0].keyframes[0].elements[0];
-    let ElementKind::Symbol { symbol, loop_mode, first_frame, blend, filters, .. } = &inst.kind else { panic!("an instance") };
+    let ElementKind::Symbol { symbol, loop_mode, first_frame, blend, filters: entries, .. } = &inst.kind else { panic!("an instance") };
     assert_eq!(*blend, anicraft_doc::BlendMode::HardLight, "Animate's blend mode names");
+    // In order; the switched-off glow comes in switched off, keeping its place (ADR 0091).
+    assert_eq!(entries.iter().map(|e| e.enabled).collect::<Vec<_>>(), [true, true, false, true, true, true]);
+    assert!(matches!(entries[2].filter, anicraft_doc::Filter::Glow { .. }));
+    let filters: Vec<anicraft_doc::Filter> = entries.iter().filter(|e| e.enabled).map(|e| e.filter.clone()).collect();
     assert_eq!(filters.len(), 5, "{filters:?}");
     assert!(matches!(filters[0], anicraft_doc::Filter::DropShadow { distance, inner: false, .. } if distance == 8.0));
     assert!(matches!(filters[1], anicraft_doc::Filter::Blur { blur_x, quality: 2, .. } if blur_x == 10.0));
@@ -169,7 +174,7 @@ fn symbols_instances_and_the_tween_between_them() {
     assert_eq!((stops[1].offset, stops[1].color.a), (0.5, 0.0));
     assert_eq!((*symbol, *loop_mode, *first_frame), (sym.id, LoopMode::PlayOnce, 2));
     assert_eq!(inst.transform.m, [2.0, 0.0, 0.0, 2.0, 100.0, 50.0]);
-    assert_eq!(inst.color.alpha, 0.5);
+    assert_eq!(inst.color, anicraft_doc::ColorEffect::Alpha(0.5));
     // Half-way through the tween (eased), the ball is between its two positions.
     let dl = evaluate(&doc, 5);
     let ball = dl.items.iter().find(|i| matches!(i.fill, Some(Paint::Solid(c)) if c == Rgba::hex(0xff0000))).expect("the ball renders");
@@ -237,7 +242,7 @@ fn shape_tweens_come_across_as_shape_tweens() {
     let doc: &'static str = Box::leak(doc.into_boxed_str());
     let (d, report) = import(&HashMap::from([("DOMDocument.xml", doc)])).unwrap();
     let k = &d.timeline(0).layers[0].keyframes[0];
-    let t = k.tween.expect("a tween");
+    let t = k.tween.clone().expect("a tween");
     assert_eq!(t.kind, anicraft_doc::TweenKind::Shape);
     assert!(matches!(t.easing, anicraft_doc::Easing::Classic(a) if a == 40.0));
     assert!(report.skipped.keys().all(|s| !s.contains("shape tween")), "{:?}", report.skipped);
@@ -383,27 +388,41 @@ fn eases_names_and_loop_modes_the_corpus_found_missing() {
     let frame = |attrs: &str, inner: &str| format!(r#"<DOMFrame index="0" duration="4" tweenType="motion" {attrs}>{inner}<elements><DOMSymbolInstance libraryItemName="Clip" name="my clip" loop="loop reverse"/></elements></DOMFrame><DOMFrame index="4"><elements/></DOMFrame>"#);
     let pts = |p: &[(f32, f32)]| p.iter().map(|(x, y)| format!(r#"<Point x="{x}" y="{y}"/>"#)).collect::<String>();
     let layers = [
-        // Seven points: a curve of two segments, drawn with the slider's ease.
+        // Seven points: a curve of two segments, exactly.
         frame(r#"hasCustomEase="true" acceleration="30""#, &format!(r#"<tweens><CustomEase target="all">{}</CustomEase></tweens>"#, pts(&[(0.0, 0.0), (0.2, 0.0), (0.3, 0.5), (0.5, 0.5), (0.7, 0.5), (0.8, 1.0), (1.0, 1.0)]))),
-        // One curve per property: also the slider's.
-        frame(r#"hasCustomEase="true" useSingleEaseCurve="false""#, &format!(r#"<tweens><CustomEase target="position">{0}</CustomEase><CustomEase target="rotation">{0}</CustomEase></tweens>"#, pts(&[(0.0, 0.0), (0.5, 0.0), (0.5, 1.0), (1.0, 1.0)]))),
-        // Said to have a custom ease, with none there.
+        // One curve per property: each its own; the slider eases the rest.
+        frame(r#"hasCustomEase="true" useSingleEaseCurve="false" acceleration="-50""#, &format!(r#"<tweens><CustomEase target="position">{0}</CustomEase><CustomEase target="rotation">{1}</CustomEase><CustomEase target="sparkle">{0}</CustomEase></tweens>"#, pts(&[(0.0, 0.0), (0.5, 0.0), (0.5, 1.0), (1.0, 1.0)]), pts(&[(0.0, 0.0), (0.1, 0.4), (0.2, 1.2), (0.4, 1.2), (0.6, 1.2), (0.9, 1.0), (1.0, 1.0)]))),
+        // Said to have a custom ease, with none there; and a broken point list.
         frame(r#"hasCustomEase="true""#, ""),
+        frame(r#"hasCustomEase="true" acceleration="10""#, &format!(r#"<tweens><CustomEase target="all">{}</CustomEase></tweens>"#, pts(&[(0.0, 0.0), (0.5, 0.0), (1.0, 1.0)]))),
     ];
     let layers: String = layers.iter().map(|f| format!(r#"<DOMLayer name="L"><frames>{f}</frames></DOMLayer>"#)).collect();
     let doc = format!(r#"<DOMDocument><symbols><Include href="Clip.xml"/></symbols><timelines><DOMTimeline name="Scene 1"><layers>{layers}</layers></DOMTimeline></timelines></DOMDocument>"#);
     let doc: &'static str = Box::leak(doc.into_boxed_str());
     let clip = r#"<DOMSymbolItem name="Clip"><timeline><DOMTimeline name="Clip"/></timeline></DOMSymbolItem>"#;
     let (d, report) = import(&HashMap::from([("DOMDocument.xml", doc), ("LIBRARY/Clip.xml", clip)])).unwrap();
-    let eases: Vec<anicraft_doc::Easing> = d.timeline(0).layers.iter().map(|l| l.keyframes[0].tween.unwrap().easing).collect();
-    assert_eq!(eases, [anicraft_doc::Easing::Classic(30.0), anicraft_doc::Easing::Linear, anicraft_doc::Easing::Linear]);
-    assert_eq!(report.skipped.get("custom ease curves (drawn with the simple ease)"), Some(&3));
+    use anicraft_doc::{CustomEase, EaseGroup, Easing};
+    let tween = |l: usize| d.timeline(0).layers[l].keyframes[0].tween.clone().unwrap();
+    let v = |p: &[(f32, f32)]| p.iter().map(|(x, y)| anicraft_geom::Vec2::new(*x, *y)).collect::<Vec<_>>();
+    let two = CustomEase::from_flat(&v(&[(0.0, 0.0), (0.2, 0.0), (0.3, 0.5), (0.5, 0.5), (0.7, 0.5), (0.8, 1.0), (1.0, 1.0)])).unwrap();
+    assert_eq!(tween(0).easing, Easing::Custom(std::sync::Arc::new(two)), "a two-segment curve, exactly");
+    assert!((tween(0).easing.apply(0.5) - 0.5).abs() < 1e-5 && tween(0).easing.apply(0.25) < 0.4);
+    let per = tween(1);
+    assert_eq!(per.easing, Easing::Classic(-50.0));
+    assert_eq!(per.ease(EaseGroup::Position), &Easing::CubicBezier(0.5, 0.0, 0.5, 1.0));
+    assert!(matches!(per.ease(EaseGroup::Rotation), Easing::Custom(c) if c.points().len() == 3));
+    assert_eq!((per.has_own(EaseGroup::Scale), per.groups.len()), (false, 2));
+    assert_eq!((tween(2).easing, tween(3).easing), (Easing::Linear, Easing::Classic(10.0)));
+    assert_eq!(report.skipped.get("custom eases of unknown properties (left out)"), Some(&1));
+    assert_eq!(report.skipped.get("custom eases without their curve (drawn with the simple ease)"), Some(&1));
+    assert_eq!(report.skipped.get("custom ease curves with a broken point list (drawn with the simple ease)"), Some(&1));
+    assert!(!report.skipped.contains_key("custom ease curves (drawn with the simple ease)"));
     assert_eq!(d.library[0].kind, SymbolKind::MovieClip, "no symbolType: a movie clip");
     let ElementKind::Symbol { loop_mode, .. } = &d.timeline(0).layers[0].keyframes[0].elements[0].kind else { panic!() };
     assert_eq!(*loop_mode, LoopMode::Loop, "loop reverse plays forward");
-    assert_eq!(report.skipped.get("reverse loop modes (played forward)"), Some(&3));
+    assert_eq!(report.skipped.get("reverse loop modes (played forward)"), Some(&4));
     assert_eq!(d.timeline(0).layers[0].keyframes[0].elements[0].name, "", "not an identifier: left out");
-    assert_eq!(report.skipped.get("instance names actions can't use (left out)"), Some(&3));
+    assert_eq!(report.skipped.get("instance names actions can't use (left out)"), Some(&4));
 }
 
 #[test]
@@ -446,13 +465,14 @@ trace(n);]]></script></Actionscript><elements><DOMSymbolInstance libraryItemName
     files.insert("PublishSettings.xml", "<flash_profiles><unclosed>");
     let (d, report) = import(&files).unwrap();
     assert!(d.document_class.is_empty() && !report.kept.contains_key("document class"));
-    assert!(report.kept.contains_key("frame scripts in ActionScript 3.0"));
+    // Read as ActionScript 3.0, its variable and `?:` are in the subset now (ADR 0052).
+    assert!(report.runs.contains_key("frame scripts in ActionScript 3.0"));
 }
 
 #[test]
-fn loose_shapes_come_in_raw_and_drawing_objects_and_groups_as_objects() {
+fn loose_shapes_come_in_raw_and_drawing_objects_and_groups_as_groups() {
     // Animate's raw shapes (merge drawing) are loose `DOMShape`s; a drawing object says so, and
-    // a group is an object whatever it holds (ADR 0042).
+    // a group is a group (ADR 0073) whose shapes merge only with each other.
     let square = |attrs: &str, x: u32| {
         format!(
             r##"<DOMShape {attrs}><fills><FillStyle index="1"><SolidColor color="#FF0000"/></FillStyle></fills><strokes><StrokeStyle index="1"><SolidStroke weight="2"><fill><SolidColor/></fill></SolidStroke></StrokeStyle></strokes>
@@ -469,9 +489,14 @@ fn loose_shapes_come_in_raw_and_drawing_objects_and_groups_as_objects() {
     );
     let doc: &'static str = Box::leak(doc.into_boxed_str());
     let (d, _) = import(&HashMap::from([("DOMDocument.xml", doc)])).unwrap();
-    let merge: Vec<bool> = d.timeline(0).layers[0].keyframes[0].elements.iter().map(|e| matches!(&e.kind, ElementKind::Shape(s) if s.merge)).collect();
-    // Each square is a fill and a stroke.
-    assert_eq!(merge, [true, true, false, false, false, false]);
+    let els = &d.timeline(0).layers[0].keyframes[0].elements;
+    let merge: Vec<bool> = els.iter().map(|e| matches!(&e.kind, ElementKind::Shape(s) if s.merge)).collect();
+    // Each square is a fill and a stroke; the third is in a group (ADR 0073), raw inside it.
+    assert_eq!(merge, [true, true, false, false, false]);
+    let group = els.last().unwrap();
+    assert!(matches!(group.kind, ElementKind::Group { .. }));
+    let inside: Vec<bool> = group.kind.group_members().iter().map(|e| matches!(&e.kind, ElementKind::Shape(s) if s.merge)).collect();
+    assert_eq!(inside, [true, true]);
 }
 
 #[test]
@@ -500,4 +525,151 @@ fn stroke_caps_joints_dashes_and_dots_come_across() {
         assert_eq!(st.style.dash, None);
         assert_eq!(report.skipped.get("ragged, stipple and hatched strokes (drawn solid)"), Some(&1));
     }
+}
+
+/// A button whose Over and Down frames hold sounds (ADR 0057), a sound on the main timeline, and
+/// sounds the package doesn't hold in a form anyone can read.
+const SOUND_DOC: &str = r##"<DOMDocument width="200" height="100">
+  <media>
+    <DOMSoundItem name="Sounds/click.wav" href="Sounds/click.wav" soundDataHRef="M 1 1.dat"/>
+    <DOMSoundItem name="private.mp3" href="private.mp3" soundDataHRef="M 2 2.dat"/>
+    <DOMSoundItem name="gone.wav" href="gone.wav"/>
+  </media>
+  <symbols><Include href="Push.xml"/></symbols>
+  <timelines><DOMTimeline name="Scene 1"><layers>
+    <DOMLayer name="Music"><frames><DOMFrame index="0" duration="4" soundName="Sounds/click.wav" soundSync="start" soundLoopMode="repeat" soundLoop="3"/></frames></DOMLayer>
+    <DOMLayer name="Buttons"><frames><DOMFrame index="0" duration="4"><elements><DOMSymbolInstance libraryItemName="Push"/></elements></DOMFrame></frames></DOMLayer>
+  </layers></DOMTimeline></timelines>
+</DOMDocument>"##;
+
+const PUSH: &str = r##"<DOMSymbolItem name="Push" symbolType="button"><timeline><DOMTimeline name="Push"><layers>
+  <DOMLayer name="Sounds"><frames>
+    <DOMFrame index="0"/>
+    <DOMFrame index="1" soundName="Sounds/click.wav"/>
+    <DOMFrame index="2" soundName="Sounds/click.wav" soundSync="stream" soundEffect="fade in"/>
+    <DOMFrame index="3" soundName="private.mp3"/>
+  </frames></DOMLayer>
+  <DOMLayer name="Art"><frames><DOMFrame index="0" duration="4"><elements><DOMRectangleObject x="0" y="0" objectWidth="40" objectHeight="20"><fill><SolidColor color="#3366CC"/></fill></DOMRectangleObject></elements></DOMFrame></frames></DOMLayer>
+</layers></DOMTimeline></timeline></DOMSymbolItem>"##;
+
+#[test]
+fn sounds_in_the_package_come_across_on_frames_and_buttons_states() {
+    let wav = anicraft_doc::audio::wav::encode(8000, 1, &[0.25; 800], anicraft_doc::audio::wav::Bits::Int16);
+    let files: HashMap<String, Vec<u8>> = HashMap::from([
+        ("DOMDocument.xml".to_string(), SOUND_DOC.as_bytes().to_vec()),
+        ("LIBRARY/Push.xml".to_string(), PUSH.as_bytes().to_vec()),
+        // An XFL folder keeps the original file in LIBRARY/.
+        ("LIBRARY/Sounds/click.wav".to_string(), wav),
+        // Animate's own encoding is not public: reported, not guessed.
+        ("bin/M 2 2.dat".to_string(), vec![1, 2, 3, 4, 5, 6, 7, 8]),
+    ]);
+    let read = |p: &str| -> Result<Option<Vec<u8>>, XflError> { Ok(files.get(p).cloned()) };
+    let (doc, report) = import_with(&read).unwrap();
+    assert_eq!(doc.sounds.iter().map(|s| (s.name.as_str(), s.rate, s.frames)).collect::<Vec<_>>(), [("click.wav", 8000, 800)]);
+    let click = doc.sounds[0].id;
+    let path = doc.entry_path(anicraft_doc::LibraryEntry::Item(anicraft_doc::LibraryItem::Sound(click)));
+    assert_eq!(path, "Sounds/click.wav", "in its Library folder");
+    // The main timeline's: Start, three times.
+    let music = doc.timeline(0).layers[0].keyframes[0].sound.clone().unwrap();
+    assert_eq!((music.sound, music.sync, music.repeat, music.looping), (click, anicraft_doc::SoundSync::Start, 3, false));
+    // The button's Over and Down frames keep theirs; the Hit frame's sound isn't readable.
+    let push = doc.library.iter().find(|s| s.name == "Push").unwrap();
+    let on = |f: u32| push.timeline.layers[0].keyframes.iter().find(|k| k.start == f).and_then(|k| k.sound.clone());
+    assert_eq!(on(1).map(|s| (s.sound, s.sync)), Some((click, anicraft_doc::SoundSync::Event)));
+    assert_eq!(on(2).map(|s| (s.sound, s.sync)), Some((click, anicraft_doc::SoundSync::Stream)));
+    assert_eq!(on(3), None);
+    assert_eq!(on(2).map(|s| s.effect), Some(anicraft_doc::sound::SoundEffect::FadeIn), "the effect comes across (ADR 0086)");
+    // Sounds that don't come across are named, with their format (ADR 0086).
+    assert_eq!(report.names.get("sounds in formats AniCraft can't decode"), Some(&vec!["private.mp3: Animate's own sound data".to_string()]));
+    assert_eq!(report.names.get("missing sound files"), Some(&vec!["gone.wav".to_string()]));
+    assert_eq!(report.skipped.get("frame sounds whose sound isn't in the package"), Some(&1));
+    assert!(report.summary().contains("1 missing sound files (gone.wav)"), "{}", report.summary());
+    // In the player, going over the button starts its Over sound.
+    use anicraft_doc::player::{Event, NoScripts, input, start};
+    let s = start(&doc, &mut NoScripts);
+    let s = input(&doc, &s.state, &[Event::Move(anicraft_geom::Vec2::new(10.0, 10.0))], &mut NoScripts);
+    assert_eq!(s.sounds.iter().map(|x| x.sound.sound).collect::<Vec<_>>(), [click]);
+}
+
+/// #163: Animate leaves the default stage colour (white) out of `DOMDocument.xml`, so a file
+/// without `backgroundColor` has a white stage, not a black one.
+#[test]
+fn a_document_without_a_background_colour_has_a_white_stage() {
+    let read = |p: &str| -> Result<Option<Vec<u8>>, XflError> {
+        Ok((p == "DOMDocument.xml").then(|| br#"<DOMDocument xmlns="http://ns.adobe.com/xfl/2008/" frameRate="12"><timelines><DOMTimeline name="Scene 1"/></timelines></DOMDocument>"#.to_vec()))
+    };
+    let (doc, _) = import_with(&read).unwrap();
+    assert_eq!(doc.stage.background, Rgba::WHITE);
+    assert_eq!((doc.stage.width, doc.stage.height), (550, 400), "Animate's default size, also left out");
+}
+
+/// ADR 0086: hostile sound data (cut short, sizes that lie, a sample count far past the file)
+/// never panics, never allocates past the file, and is either read for what it holds or named
+/// in the report.
+#[test]
+fn hostile_sound_files_are_bounded_and_named() {
+    let doc = r#"<DOMDocument><media><DOMSoundItem name="s.wav" href="s.wav" sampleCount="99999999999999" format="44kHz 16bit Stereo"/></media>
+      <timelines><DOMTimeline name="Scene 1"><layers><DOMLayer name="L"><frames><DOMFrame index="0" soundName="s.wav" soundLoop="4294967295"/></frames></DOMLayer></layers></DOMTimeline></timelines></DOMDocument>"#;
+    let open = |wav: Vec<u8>| {
+        let files: HashMap<String, Vec<u8>> = HashMap::from([("DOMDocument.xml".to_string(), doc.as_bytes().to_vec()), ("LIBRARY/s.wav".to_string(), wav)]);
+        let read = |p: &str| -> Result<Option<Vec<u8>>, XflError> { Ok(files.get(p).cloned()) };
+        import_with(&read).unwrap()
+    };
+    let good = anicraft_doc::audio::wav::encode(8000, 2, &[0.5; 1600], anicraft_doc::audio::wav::Bits::Int16);
+    let (d, _) = open(good.clone());
+    assert_eq!(d.sounds[0].frames, 800);
+    assert_eq!(d.timeline(0).layers[0].keyframes[0].sound.as_ref().unwrap().repeat, anicraft_doc::sound::MAX_REPEAT, "repeats bounded");
+    // Every cut: read for what it holds, or named.
+    for cut in 0..good.len() {
+        let (d, r) = open(good[..cut].to_vec());
+        assert!(d.sounds.len() == 1 || r.names.values().flatten().any(|n| n.starts_with("s.wav")), "cut at {cut}: {r:?}");
+        assert!(d.sounds.iter().all(|s| s.frames <= 800));
+    }
+    // The data chunk claiming 4 GB, and the RIFF size lying: only what is there is read.
+    let mut lying = good.clone();
+    lying[40..44].copy_from_slice(&0xFFFF_FFF0u32.to_le_bytes());
+    lying[4..8].copy_from_slice(&u32::MAX.to_le_bytes());
+    let (d, _) = open(lying);
+    assert_eq!(d.sounds[0].frames, 800);
+    // 32 channels of one byte each claimed in a tiny file: no frames, so named, not imported.
+    let mut wide = good;
+    wide[22..24].copy_from_slice(&32u16.to_le_bytes());
+    wide[32..34].copy_from_slice(&64u16.to_le_bytes());
+    wide.truncate(44 + 10);
+    let (d, r) = open(wide);
+    assert!(d.sounds.is_empty() && r.skipped.get("sounds in formats AniCraft can't decode") == Some(&1), "{r:?}");
+}
+
+/// ADR 0086: the report names what didn't come across, a few per kind in the summary line.
+#[test]
+fn the_summary_names_a_few_items_and_counts_the_rest() {
+    let mut media = String::new();
+    for i in 0..5 {
+        media.push_str(&format!(r#"<DOMSoundItem name="gone{i}.wav" href="gone{i}.wav"/>"#));
+    }
+    let doc = format!(r#"<DOMDocument><media>{media}</media><timelines><DOMTimeline name="Scene 1"/></timelines></DOMDocument>"#);
+    let read = |p: &str| -> Result<Option<Vec<u8>>, XflError> { Ok((p == "DOMDocument.xml").then(|| doc.as_bytes().to_vec())) };
+    let (_, r) = import_with(&read).unwrap();
+    assert_eq!(r.names["missing sound files"].len(), 5);
+    assert!(r.summary().contains("5 missing sound files (gone0.wav; gone1.wav; gone2.wav and 2 more)"), "{}", r.summary());
+}
+
+/// ADR 0086: a `.fla` whose package sits in one top folder opens; one with the package at its
+/// root and a folder beside it opens the root one; several documents in top folders are
+/// refused with their names.
+#[test]
+fn a_package_in_one_top_folder_opens_and_several_are_named() {
+    use crate::zip::pack::{Raw, write};
+    let doc = br#"<DOMDocument width="99"><timelines><DOMTimeline name="Scene 1"/></timelines></DOMDocument>"#;
+    let other = br#"<DOMDocument width="42"><timelines><DOMTimeline name="Scene 1"/></timelines></DOMDocument>"#;
+    let fla = |entries: &[(&str, &[u8])]| write(&entries.iter().map(|(n, b)| Raw::new(n, b, true)).collect::<Vec<_>>(), false);
+    let (d, _) = crate::import_fla(&fla(&[("Walk/DOMDocument.xml", doc), ("__MACOSX/Walk/._DOMDocument.xml", b"\0\x05\x16\x07")])).unwrap();
+    assert_eq!(d.stage.width, 99);
+    let (d, _) = crate::import_fla(&fla(&[("DOMDocument.xml", doc), ("Old/DOMDocument.xml", other)])).unwrap();
+    assert_eq!(d.stage.width, 99, "the package at the root wins");
+    let e = crate::import_fla(&fla(&[("Walk/DOMDocument.xml", doc), ("Run/DOMDocument.xml", other)])).err().unwrap().to_string();
+    assert!(e.contains("2 Animate documents (Run, Walk)"), "{e}");
+    // Deeper than one folder isn't looked for.
+    let e = crate::import_fla(&fla(&[("a/b/DOMDocument.xml", doc)])).err().unwrap().to_string();
+    assert!(e.contains("no DOMDocument.xml"), "{e}");
 }

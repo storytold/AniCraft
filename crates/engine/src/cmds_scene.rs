@@ -31,7 +31,7 @@ pub(crate) fn target_scene(s: &Session, p: &Value) -> Result<usize> {
 }
 
 /// Opens scene `i` at its first frame, on its top layer.
-fn open_scene(s: &mut Session, i: usize) {
+pub(crate) fn open_scene(s: &mut Session, i: usize) {
     // A scene is edited from its own timeline: open symbols close first (ADR 0045).
     s.exit_all();
     s.scene = i.min(s.doc.scenes.len().saturating_sub(1));
@@ -127,7 +127,7 @@ fn duplicate_scene(s: &mut Session, p: &Value) -> Result<Value> {
     let Some(src) = s.doc.scenes.get(i).cloned() else { return Err(EngineError::State("no such scene".into())) };
     let timeline = reid(s, &src.timeline);
     let name = unused_name(s, &format!("{} copy", src.name));
-    s.doc.scenes.insert(i + 1, Arc::new(Scene { name, timeline }));
+    s.doc.scenes.insert(i + 1, Arc::new(Scene { name, timeline, guides: src.guides.clone() }));
     open_scene(s, i + 1);
     Ok(scene_json(s))
 }

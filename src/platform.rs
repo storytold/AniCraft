@@ -5,7 +5,8 @@
 //! The web build (ADR 0036) is one more platform: the browser's file picker and downloads take
 //! the dialogs' place, its storage the settings folder's, and the glue lives in `web.rs`.
 
-use std::path::PathBuf;
+use crate::prefs::WindowBackend;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -53,6 +54,141 @@ pub fn system_locale() -> Option<String> {
     sys_locale::get_locale().filter(|l| !l.is_empty() && l.len() <= 64)
 }
 
+/// Whether the system asks for more contrast (ADR 0064): Windows' contrast themes (high
+/// contrast), macOS' Increase Contrast, the desktop portal's contrast setting on Linux (GNOME's
+/// High Contrast where there is no portal), the browser's `prefers-contrast: more`. `None`:
+/// this system doesn't say. Can block for a moment (it may ask another process): call it off
+/// the UI thread.
+pub fn system_high_contrast() -> Option<bool> {
+    #[cfg(windows)]
+    {
+        // HIGHCONTRAST's flags as the system keeps them; bit 0 is HCF_HIGHCONTRASTON.
+        let key = winreg::RegKey::predef(winreg::enums::HKEY_CURRENT_USER).open_subkey(r"Control Panel\Accessibility\HighContrast").ok()?; // i18n-exempt: a registry path
+        let flags: String = key.get_value("Flags").ok()?; // i18n-exempt: a registry value name
+        flags.trim().parse::<u32>().ok().map(|f| f & 1 == 1)
+    }
+    #[cfg(target_os = "macos")]
+    {
+        // Missing until the user first changes it: off.
+        let out = std::process::Command::new("defaults").args(["read", "com.apple.universalaccess", "increaseContrast"]).output().ok()?; // i18n-exempt: a command line
+        Some(String::from_utf8_lossy(&out.stdout).trim() == "1")
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        web_sys::window()?.match_media("(prefers-contrast: more)").ok()??.matches().into() // i18n-exempt: a media query
+    }
+    #[cfg(not(any(windows, target_os = "macos", target_arch = "wasm32")))]
+    {
+        portal_contrast().or_else(gnome_high_contrast)
+    }
+}
+
+/// What the system says about how interfaces should look (ADR 0064, ADR 0077), for Preferences ›
+/// Appearance › Follow system. Each part is `None` where this system doesn't say.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SystemLook {
+    /// More contrast asked for ([`system_high_contrast`]).
+    pub high_contrast: Option<bool>,
+    /// Dark mode on ([`system_dark_mode`]); `Some(false)`: light.
+    pub dark: Option<bool>,
+}
+
+/// Asks the system for both parts of its look. Can block for a moment: call it off the UI thread.
+pub fn system_look() -> SystemLook {
+    SystemLook { high_contrast: system_high_contrast(), dark: system_dark_mode() }
+}
+
+/// Whether the system's apps are set to dark (ADR 0077): Windows' "default app mode"
+/// (`AppsUseLightTheme`), macOS' Appearance (`AppleInterfaceStyle`, also while it switches
+/// automatically), the desktop portal's `color-scheme` on Linux (GNOME's own setting where there is
+/// no portal), the browser's `prefers-color-scheme`. `None`: this system doesn't say. Can block for
+/// a moment: call it off the UI thread.
+pub fn system_dark_mode() -> Option<bool> {
+    #[cfg(windows)]
+    {
+        let key = winreg::RegKey::predef(winreg::enums::HKEY_CURRENT_USER).open_subkey(r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize").ok()?; // i18n-exempt: a registry path
+        let light: u32 = key.get_value("AppsUseLightTheme").ok()?; // i18n-exempt: a registry value name
+        Some(light == 0)
+    }
+    #[cfg(target_os = "macos")]
+    {
+        // The key exists only while the appearance is dark; `defaults` fails when it is missing.
+        let out = std::process::Command::new("defaults").args(["read", "-g", "AppleInterfaceStyle"]).output().ok()?; // i18n-exempt: a command line
+        Some(out.status.success() && String::from_utf8_lossy(&out.stdout).trim().eq_ignore_ascii_case("dark"))
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        web_sys::window()?.match_media("(prefers-color-scheme: dark)").ok()??.matches().into() // i18n-exempt: a media query
+    }
+    #[cfg(not(any(windows, target_os = "macos", target_arch = "wasm32")))]
+    {
+        portal_color_scheme().or_else(gnome_color_scheme)
+    }
+}
+
+/// The XDG desktop portal's `org.freedesktop.appearance color-scheme`: 1 prefers dark, 2 light,
+/// 0 says nothing.
+#[cfg(not(any(windows, target_os = "macos", target_arch = "wasm32")))]
+fn portal_color_scheme() -> Option<bool> {
+    portal_appearance("color-scheme").and_then(scheme_from_portal)
+}
+
+#[cfg_attr(any(windows, target_os = "macos", target_arch = "wasm32"), allow(dead_code))]
+fn scheme_from_portal(v: u32) -> Option<bool> {
+    match v {
+        1 => Some(true),
+        2 => Some(false),
+        _ => None,
+    }
+}
+
+/// GNOME's `color-scheme` (`'prefer-dark'`, `'prefer-light'`, `'default'`), for desktops without
+/// the portal setting.
+#[cfg(not(any(windows, target_os = "macos", target_arch = "wasm32")))]
+fn gnome_color_scheme() -> Option<bool> {
+    let out = std::process::Command::new("gsettings").args(["get", "org.gnome.desktop.interface", "color-scheme"]).output().ok().filter(|o| o.status.success())?; // i18n-exempt: a command line
+    match String::from_utf8_lossy(&out.stdout).trim().trim_matches('\'') {
+        "prefer-dark" => Some(true),
+        "prefer-light" => Some(false),
+        _ => None,
+    }
+}
+
+/// The XDG desktop portal's `org.freedesktop.appearance contrast` (1: high), through `gdbus`.
+#[cfg(not(any(windows, target_os = "macos", target_arch = "wasm32")))]
+fn portal_contrast() -> Option<bool> {
+    portal_appearance("contrast").map(|v| v == 1)
+}
+
+/// One `org.freedesktop.appearance` number from the desktop portal, through `gdbus`.
+#[cfg(not(any(windows, target_os = "macos", target_arch = "wasm32")))]
+fn portal_appearance(key: &str) -> Option<u32> {
+    let out = std::process::Command::new("gdbus") // i18n-exempt: a command line
+        .args(["call", "--session", "--timeout", "1", "--dest", "org.freedesktop.portal.Desktop", "--object-path", "/org/freedesktop/portal/desktop", "--method", "org.freedesktop.portal.Settings.ReadOne", "org.freedesktop.appearance", key]) // i18n-exempt: a command line
+        .output()
+        .ok()
+        .filter(|o| o.status.success())?;
+    parse_portal_uint(&String::from_utf8_lossy(&out.stdout))
+}
+
+/// GNOME's own switch, for desktops without the portal setting.
+#[cfg(not(any(windows, target_os = "macos", target_arch = "wasm32")))]
+fn gnome_high_contrast() -> Option<bool> {
+    let out = std::process::Command::new("gsettings").args(["get", "org.gnome.desktop.a11y.interface", "high-contrast"]).output().ok().filter(|o| o.status.success())?; // i18n-exempt: a command line
+    match String::from_utf8_lossy(&out.stdout).trim() {
+        "true" => Some(true),
+        "false" => Some(false),
+        _ => None,
+    }
+}
+
+/// The number in a `gdbus` reply such as `(<<uint32 1>>,)` or `(<uint32 0>,)`.
+#[cfg_attr(any(windows, target_os = "macos", target_arch = "wasm32"), allow(dead_code))]
+fn parse_portal_uint(reply: &str) -> Option<u32> {
+    let rest = reply.split("uint32").nth(1)?;
+    rest.trim_start().split(|c: char| !c.is_ascii_digit()).next()?.parse().ok()
+}
+
 /// Whether the active fonts can draw ⌘ ⇧ ⌥ ⌃ (set once fonts are installed).
 static MAC_GLYPHS: AtomicBool = AtomicBool::new(false);
 
@@ -67,6 +203,12 @@ pub fn set_web_on_mac(mac: bool) {
 /// Whose conventions shortcut labels follow: the OS's, or in a browser the computer's under it.
 fn keys_os() -> Os {
     if OS == Os::Web && WEB_ON_MAC.load(Ordering::Relaxed) { Os::Mac } else { OS }
+}
+
+/// Whether Alt and F10 reach the menu bar (ADR 0064): on Windows, Linux and the web, as their
+/// applications do, but not on a Mac (in a browser or not), whose menu conventions differ.
+pub fn menu_bar_keys() -> bool {
+    keys_os() != Os::Mac
 }
 
 pub fn set_mac_glyphs(available: bool) {
@@ -100,7 +242,12 @@ pub fn shortcut_label_for(os: Os, s: &str, glyphs: bool) -> String {
         (k, _) => k,
     };
     // Apple order: Control, Option, Shift, Command. Our "Ctrl" is the command modifier.
+    // Held keys that aren't modifiers ("Space+Drag") stay as words, first.
     let mut out = String::new();
+    for held in mods.split('+').filter(|m| !m.is_empty() && !matches!(*m, "Alt" | "Shift" | "Ctrl")) {
+        out.push_str(held);
+        out.push('+');
+    }
     for (name, glyph, text) in [("Alt", "⌥", "Option+"), ("Shift", "⇧", "Shift+"), ("Ctrl", "⌘", "Cmd+")] {
         if has(name) {
             out.push_str(if glyphs { glyph } else { text });
@@ -110,17 +257,150 @@ pub fn shortcut_label_for(os: Os, s: &str, glyphs: bool) -> String {
     out
 }
 
-/// Where preferences live: %APPDATA%\AniCraft, ~/Library/Application Support/AniCraft, or
-/// $XDG_CONFIG_HOME/anicraft (default ~/.config/anicraft).
-pub fn config_dir() -> Option<PathBuf> {
-    let env = |k: &str| std::env::var_os(k).filter(|v| !v.is_empty()).map(PathBuf::from);
-    match OS {
+// ----- portable mode (ADR 0094) -----------------------------------------------------------------
+
+/// The file that makes a copy of AniCraft portable (ADR 0094): next to the program, above `bin/`
+/// in the Linux tar.gz, next to `AniCraft.app` on macOS, or next to the `.AppImage`. The Windows
+/// zip and the Linux tar.gz ship with it. Its contents don't matter.
+pub const PORTABLE_MARKER: &str = "anicraft-portable";
+/// The folder beside the marker where a portable copy keeps everything it would otherwise keep
+/// in the user's settings folder.
+pub const PORTABLE_DATA: &str = "data";
+
+/// The folder holding the portable marker for a program at `exe`, if this copy is portable: the
+/// program's folder; the folder above it when that is the tar.gz's `bin/`; on macOS the folder
+/// holding the `.app` (writing inside the bundle would break its signature); for an AppImage the
+/// folder holding the `.AppImage` file (`appimage`, from `$APPIMAGE`), since the running image is
+/// a read-only mount that goes away. Pure, so each layout is tested with made-up paths.
+pub fn portable_root_for(os: Os, exe: &Path, appimage: Option<&Path>, is_file: &dyn Fn(&Path) -> bool) -> Option<PathBuf> {
+    if os == Os::Web {
+        return None;
+    }
+    let mut candidates: Vec<&Path> = Vec::new();
+    match appimage.filter(|a| unix_absolute(a) && matches!(os, Os::Linux | Os::Other)) {
+        Some(a) => candidates.extend(a.parent()),
+        None => {
+            let dir = exe.parent()?;
+            let bundle = (os == Os::Mac && dir.ends_with("Contents/MacOS")).then(|| dir.parent().and_then(Path::parent)).flatten();
+            match bundle.filter(|b| b.extension().is_some_and(|e| e.eq_ignore_ascii_case("app"))) {
+                Some(app) => candidates.extend(app.parent()),
+                None => {
+                    candidates.push(dir);
+                    if dir.file_name().is_some_and(|n| n == "bin") {
+                        candidates.extend(dir.parent());
+                    }
+                }
+            }
+        }
+    }
+    candidates.into_iter().find(|d| is_file(&d.join(PORTABLE_MARKER))).map(Path::to_path_buf)
+}
+
+/// Where this copy keeps its data, decided once at start.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Placement {
+    /// The portable data folder, when this copy is portable and the folder can be written.
+    pub portable: Option<PathBuf>,
+    /// A portable copy whose data folder can't be written (a read-only disc or share): the
+    /// folder and why. The user's settings folder is used instead, and Preferences says so.
+    pub unwritable: Option<(PathBuf, String)>,
+}
+
+/// Whether `dir` can be made and written to (a small probe file, removed again).
+#[cfg(not(target_arch = "wasm32"))]
+fn writable(dir: &Path) -> Result<(), String> {
+    std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    let probe = dir.join(".anicraft-write-test");
+    std::fs::write(&probe, b"").map_err(|e| e.to_string())?;
+    let _ = std::fs::remove_file(&probe);
+    Ok(())
+}
+
+/// The placement for a marker folder (`root`, from [`portable_root_for`]), given whether its
+/// data folder can be written.
+pub fn placement_for(root: Option<&Path>, can_write: &dyn Fn(&Path) -> Result<(), String>) -> Placement {
+    let Some(data) = root.map(|r| r.join(PORTABLE_DATA)) else { return Placement::default() };
+    match can_write(&data) {
+        Ok(()) => Placement { portable: Some(data), unwritable: None },
+        Err(e) => Placement { portable: None, unwritable: Some((data, e)) },
+    }
+}
+
+/// This copy's placement (portable or installed), decided once: the one switch every folder
+/// below goes through.
+pub fn placement() -> &'static Placement {
+    static PLACEMENT: std::sync::OnceLock<Placement> = std::sync::OnceLock::new();
+    PLACEMENT.get_or_init(|| {
+        #[cfg(target_arch = "wasm32")]
+        return Placement::default();
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let Ok(exe) = std::env::current_exe() else { return Placement::default() };
+            let root = portable_root_for(OS, &exe, appimage().as_deref(), &|p| p.is_file());
+            placement_for(root.as_deref(), &writable)
+        }
+    })
+}
+
+/// The AppImage this copy runs from (`$APPIMAGE`, set by the AppImage runtime): Linux only, an
+/// absolute path to a file that is there.
+pub fn appimage() -> Option<PathBuf> {
+    if !matches!(OS, Os::Linux | Os::Other) {
+        return None;
+    }
+    std::env::var_os("APPIMAGE").filter(|v| !v.is_empty()).map(PathBuf::from).filter(|p| p.is_absolute() && p.is_file())
+}
+
+/// The user's data folder for desktop files (`$XDG_DATA_HOME`, default `~/.local/share`), where
+/// AppImage desktop integration writes (ADR 0094). A relative `$XDG_DATA_HOME` is ignored, as the
+/// XDG Base Directory spec says.
+pub fn data_home_for(env: &dyn Fn(&str) -> Option<PathBuf>) -> Option<PathBuf> {
+    env("XDG_DATA_HOME").filter(|p| unix_absolute(p)).or_else(|| env("HOME").filter(|h| unix_absolute(h)).map(|h| h.join(".local").join("share")))
+}
+
+/// Absolute on this system, or `/…` (a Linux path, so the Linux rules are tested on any OS).
+fn unix_absolute(p: &Path) -> bool {
+    p.is_absolute() || p.has_root()
+}
+
+/// [`data_home_for`] with this process's environment.
+pub fn data_home() -> Option<PathBuf> {
+    data_home_for(&|k| std::env::var_os(k).filter(|v| !v.is_empty()).map(PathBuf::from))
+}
+
+/// The user's settings folder on `os`, from the environment `env`: %APPDATA%\AniCraft,
+/// ~/Library/Application Support/AniCraft, or $XDG_CONFIG_HOME/anicraft (default
+/// ~/.config/anicraft). A portable copy's data folder (`portable`) wins over all of them.
+pub fn config_dir_for(os: Os, portable: Option<&Path>, env: &dyn Fn(&str) -> Option<PathBuf>) -> Option<PathBuf> {
+    if let Some(p) = portable {
+        return Some(p.to_path_buf());
+    }
+    match os {
         Os::Windows => env("APPDATA").map(|p| p.join("AniCraft")),
         Os::Mac => env("HOME").map(|p| p.join("Library").join("Application Support").join("AniCraft")), // i18n-exempt: folder names
         // A web page has no folders: settings go to browser storage (`load_settings`).
         Os::Web => None,
         Os::Linux | Os::Other => env("XDG_CONFIG_HOME").or_else(|| env("HOME").map(|h| h.join(".config"))).map(|p| p.join("anicraft")),
     }
+}
+
+/// Where preferences, autosave, logs, plug-ins, templates and thumbnails live: the portable data
+/// folder, or the user's settings folder ([`config_dir_for`]).
+pub fn config_dir() -> Option<PathBuf> {
+    config_dir_for(OS, placement().portable.as_deref(), &|k| std::env::var_os(k).filter(|v| !v.is_empty()).map(PathBuf::from))
+}
+
+/// Every folder AniCraft keeps things in, for Preferences › About: `(name, folder)`, the name
+/// English (translated where shown).
+pub fn places() -> Vec<(&'static str, Option<PathBuf>)> {
+    if WEB {
+        return Vec::new();
+    }
+    #[cfg_attr(target_arch = "wasm32", allow(unused_mut))]
+    let mut v = vec![(tr_noop!("Preferences"), config_dir()), (tr_noop!("Autosave"), recovery_dir()), (tr_noop!("Logs"), log_dir()), (tr_noop!("Plug-ins"), plugins_dir()), (tr_noop!("Templates"), templates_dir())];
+    #[cfg(not(target_arch = "wasm32"))]
+    v.push((tr_noop!("User guide"), Some(guide_dir())));
+    v
 }
 
 /// Where crash-recovery copies live (ADR 0015): `Recovery` in the settings folder.
@@ -135,6 +415,40 @@ pub fn recovery_dir() -> Option<PathBuf> {
 /// Whether the recovery folder was chosen explicitly (screenshot runs only touch it then).
 pub fn recovery_dir_overridden() -> bool {
     std::env::var_os("ANICRAFT_RECOVERY_DIR").is_some_and(|v| !v.is_empty())
+}
+
+/// Where Help › User Guide writes the bundled book (ADR 0069): the system's cache folder
+/// (%LOCALAPPDATA%, ~/Library/Caches, $XDG_CACHE_HOME or ~/.cache), else the temporary folder;
+/// `Cache` in the data folder of a portable copy.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn guide_dir() -> PathBuf {
+    let env = |k: &str| std::env::var_os(k).filter(|v| !v.is_empty()).map(PathBuf::from);
+    let cache = match placement().portable.as_ref() {
+        Some(data) => Some(data.join("Cache")), // i18n-exempt: a folder name
+        None => match OS {
+            Os::Windows => env("LOCALAPPDATA").map(|p| p.join("AniCraft")),
+            Os::Mac => env("HOME").map(|p| p.join("Library").join("Caches").join("AniCraft")), // i18n-exempt: folder names
+            Os::Web => None,
+            Os::Linux | Os::Other => env("XDG_CACHE_HOME").or_else(|| env("HOME").map(|h| h.join(".cache"))).map(|p| p.join("anicraft")),
+        },
+    };
+    cache.unwrap_or_else(|| std::env::temp_dir().join("AniCraft")).join(format!("guide-{}", env!("CARGO_PKG_VERSION"))) // i18n-exempt: a folder name
+}
+
+/// Help › User Guide (ADR 0069): the book bundled in the app, written to [`guide_dir`] and
+/// opened in the default browser, so it works offline. The web build serves the same pages
+/// beside the editor (`scripts/build-web.sh`) and opens them in a new tab.
+pub fn open_user_guide() -> Result<(), String> {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let dir = guide_dir();
+        anicraft_guide::write_site(&dir).map_err(|e| tr!("could not write the user guide to {path}: {e}", path = dir.display(), e = e))?;
+        crate::app::open_in_system(&dir.join("index.html"))
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        crate::web::open_page("guide/index.html")
+    }
 }
 
 /// Where settings are kept, for Preferences (in the interface language).
@@ -167,6 +481,29 @@ pub fn save_settings(json: &str) -> Result<(), String> {
     }
 }
 
+/// A recent file's start-screen picture (ADR 0059): `Thumbnails/<key>.png` in the settings
+/// folder, or browser storage on the web. `None` when there is none yet.
+pub fn load_thumbnail(key: &str) -> Option<Vec<u8>> {
+    #[cfg(target_arch = "wasm32")]
+    return crate::web::storage_get(&format!("anicraft.thumb.{key}")).and_then(|t| anicraft_engine::doc::base64_decode(&t));
+    #[cfg(not(target_arch = "wasm32"))]
+    config_dir().and_then(|d| std::fs::read(d.join("Thumbnails").join(format!("{key}.png"))).ok()) // i18n-exempt: a folder name
+}
+
+/// Keeps a recent file's picture (a small PNG) for the start screen.
+pub fn save_thumbnail(key: &str, png: &[u8]) -> Result<(), String> {
+    #[cfg(target_arch = "wasm32")]
+    return crate::web::storage_set(&format!("anicraft.thumb.{key}"), &anicraft_engine::doc::base64_encode(png));
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let dir = config_dir().ok_or(tr!("no settings folder on this system"))?.join("Thumbnails"); // i18n-exempt: a folder name
+        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        let (path, tmp) = (dir.join(format!("{key}.png")), dir.join(format!("{key}.png.tmp")));
+        std::fs::write(&tmp, png).map_err(|e| e.to_string())?;
+        std::fs::rename(&tmp, &path).map_err(|e| e.to_string())
+    }
+}
+
 /// Why this build can't run `cmd`, if it can't: a web page can't start ffmpeg or keep files in
 /// a folder of the computer (ADR 0036). The desktop app runs everything.
 pub fn unavailable(cmd: &str) -> Option<&'static str> {
@@ -176,7 +513,22 @@ pub fn unavailable(cmd: &str) -> Option<&'static str> {
     match cmd {
         "file.export_video" => Some(tr_noop!("Video export runs ffmpeg, which a web browser can't start: use the desktop app, or export an animated GIF or a PNG sequence")),
         "plugin.install" | "plugin.remove" | "plugin.reload" => Some(tr_noop!("Plug-ins are installed into a folder on your computer: use the desktop app")),
+        "desktop.integrate" | "desktop.remove" | "desktop.status" => Some(tr_noop!("The applications menu belongs to an AppImage on Linux: use the desktop app")),
+        "file.save_as_template" => Some(tr_noop!("Your templates are kept in a folder on your computer: use the desktop app (the built-in templates work here)")),
         _ => None,
+    }
+}
+
+/// Where the user's templates live (ADR 0065): `Templates` in the settings folder, one folder
+/// per category. `ANICRAFT_TEMPLATES_DIR` points it elsewhere (tests, screenshots, portable
+/// installs). None in a browser, which has no folders to keep them in.
+pub fn templates_dir() -> Option<PathBuf> {
+    if WEB {
+        return None;
+    }
+    match std::env::var_os("ANICRAFT_TEMPLATES_DIR").filter(|v| !v.is_empty()) {
+        Some(d) => Some(PathBuf::from(d)),
+        None => config_dir().map(|d| d.join("Templates")), // i18n-exempt: a folder name
     }
 }
 
@@ -195,11 +547,28 @@ pub const APP_ID: &str = "ai.storyteller.anicraft";
 pub fn viewport(b: egui::ViewportBuilder) -> egui::ViewportBuilder {
     // The Wayland app_id / X11 class: docks match it to the installed desktop entry
     // (packaging/linux/ai.storyteller.anicraft.desktop) for the icon and the launcher.
-    let b = b.with_app_id(APP_ID).with_icon(app_icon());
-    match OS {
-        Os::Mac => b.with_fullsize_content_view(true).with_title_shown(false),
+    chrome(OS, b.with_app_id(APP_ID).with_icon(app_icon()))
+}
+
+/// The window chrome for `os`. On macOS the content runs under the title bar, so the bar must be
+/// transparent too: an opaque one covers the menu row (File, Edit, …) and swallows its clicks,
+/// which left Mac users with no menus at all (#247).
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+fn chrome(os: Os, b: egui::ViewportBuilder) -> egui::ViewportBuilder {
+    match os {
+        Os::Mac => b.with_fullsize_content_view(true).with_titlebar_shown(false).with_title_shown(false).with_titlebar_buttons_shown(true),
         _ => b,
     }
+}
+
+/// Another window of the app (Test Movie, ADR 0062): the same app id, so docks and taskbars group
+/// it with the editor, and the same icon. Native frames everywhere (the editor's unified macOS
+/// title bar is for its menu row, which this window doesn't have).
+pub fn secondary_window(b: egui::ViewportBuilder) -> egui::ViewportBuilder {
+    #[cfg(not(target_arch = "wasm32"))]
+    return b.with_app_id(APP_ID).with_icon(app_icon());
+    #[cfg(target_arch = "wasm32")]
+    b
 }
 
 /// The window, Dock, taskbar and app-switcher icon (`assets/app-icon/`, see its README). macOS gets
@@ -218,14 +587,224 @@ pub fn menu_inset() -> f32 {
     if OS == Os::Mac { 72.0 } else { 0.0 }
 }
 
-/// Renderer requested by `--renderer` / `ANICRAFT_RENDERER` (`wgpu` or `gl`), if any.
+// ----- more than one window (ADR 0062) ---------------------------------------------------------
+
+/// Where Test Movie plays.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MovieHost {
+    /// A window of its own on the desktop (an egui immediate viewport).
+    Window,
+    /// A floating window inside the editor, and why.
+    Inside(Inside),
+}
+
+/// Why Test Movie plays inside the editor.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Inside {
+    /// Preferences › Test Movie says so.
+    Chosen,
+    /// A web page has one window (ADR 0036).
+    WebPage,
+    /// The windowing layer can't open another window here.
+    NoWindows,
+}
+
+impl Inside {
+    /// What the floating window says about it (English: translated where it is shown); nothing
+    /// when the user chose it.
+    pub fn note(self) -> Option<&'static str> {
+        match self {
+            Inside::Chosen => None,
+            Inside::WebPage => Some(tr_noop!("Inside the editor: a web page can't open a window of its own")),
+            Inside::NoWindows => Some(tr_noop!("Inside the editor: this system can't open another window for it")),
+        }
+    }
+}
+
+/// Where Test Movie plays, given whether egui embeds viewports (eframe sets that on the web and
+/// wherever it has no multi-window support) and the user's choice.
+pub fn movie_host(embed_viewports: bool, own_window: bool) -> MovieHost {
+    movie_host_for(OS, embed_viewports, own_window)
+}
+
+pub fn movie_host_for(os: Os, embed_viewports: bool, own_window: bool) -> MovieHost {
+    if os == Os::Web {
+        MovieHost::Inside(Inside::WebPage)
+    } else if embed_viewports {
+        MovieHost::Inside(Inside::NoWindows)
+    } else if !own_window {
+        MovieHost::Inside(Inside::Chosen)
+    } else {
+        MovieHost::Window
+    }
+}
+
+/// Whether AniCraft can put a window back where it was. Wayland never tells an app where its
+/// windows are, nor lets it place them: the desktop does.
+pub fn window_positions() -> bool {
+    let env = |k: &str| std::env::var(k).ok().filter(|v| !v.is_empty());
+    window_positions_for(OS, env("WAYLAND_DISPLAY").is_some(), env("WINIT_UNIX_BACKEND").as_deref())
+}
+
+/// winit picks Wayland when `WAYLAND_DISPLAY` is set, unless `WINIT_UNIX_BACKEND=x11`.
+pub fn window_positions_for(os: Os, wayland_display: bool, winit_backend: Option<&str>) -> bool {
+    match os {
+        Os::Linux | Os::Other => !wayland_display || winit_backend.is_some_and(|b| b.eq_ignore_ascii_case("x11")),
+        Os::Web => false,
+        Os::Mac | Os::Windows => true,
+    }
+}
+
+/// A remembered window corner, if it can still be used: finite, and on or beside the screen the
+/// editor is on (a monitor to its left or right is fine; a window lost far off-screen isn't).
+pub fn usable_position(at: [f32; 2], monitor: Option<egui::Vec2>) -> Option<egui::Pos2> {
+    let [x, y] = at;
+    if !x.is_finite() || !y.is_finite() {
+        return None;
+    }
+    let m = monitor.filter(|m| m.x > 0.0 && m.y > 0.0).unwrap_or(egui::vec2(16384.0, 16384.0));
+    let ok = x >= -m.x && x <= 2.0 * m.x - 64.0 && y >= -m.y && y <= 2.0 * m.y - 64.0;
+    ok.then(|| egui::pos2(x, y))
+}
+
+// ----- documents the system asks AniCraft to open (ADR 0062) ------------------------------------
+
+/// Something the system asked of the running app, outside its windows.
+// Only macOS hands documents to a running app; elsewhere the tests make requests.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SystemRequest {
+    /// Open these files (macOS: a double-click in Finder, a drop on the Dock icon, Open With).
+    Open(Vec<PathBuf>),
+    /// Quit (macOS: the Dock's Quit, logging out): through the unsaved-changes guard.
+    Quit,
+}
+
+thread_local! {
+    /// Requests not yet handled. Filled on the main thread (AppKit calls back there), read by
+    /// the frame on the same thread.
+    static REQUESTS: std::cell::RefCell<Vec<SystemRequest>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Most requests kept between two frames (a flood of Apple Events can't grow memory).
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+const MAX_REQUESTS: usize = 64;
+
+/// Queues a request for the next frame.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub fn push_request(r: SystemRequest) {
+    REQUESTS.with(|q| {
+        let mut q = q.borrow_mut();
+        if q.len() < MAX_REQUESTS {
+            q.push(r);
+        }
+    });
+}
+
+/// The requests that arrived since the last frame, in order.
+pub fn take_requests() -> Vec<SystemRequest> {
+    #[cfg(target_os = "macos")]
+    MAC_INBOX.with(|i| {
+        if let Some(inbox) = i.borrow().as_ref() {
+            for e in inbox.drain() {
+                push_request(match e {
+                    fmv_macos_events::Event::Open(paths) => SystemRequest::Open(paths),
+                    fmv_macos_events::Event::Quit => SystemRequest::Quit,
+                });
+            }
+        }
+    });
+    REQUESTS.with(|q| std::mem::take(&mut *q.borrow_mut()))
+}
+
+#[cfg(target_os = "macos")]
+thread_local! {
+    static MAC_INBOX: std::cell::RefCell<Option<fmv_macos_events::Inbox>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Listens for documents the system hands over while AniCraft runs. Keep the result until the
+/// event loop returns. On macOS it must start before the event loop does, so the document that
+/// launched the app (sent as an Apple Event, not on the command line) isn't missed. Windows and
+/// Linux pass that document on the command line (`main`), and a second document starts a second
+/// AniCraft, so there is nothing to listen for there.
+pub struct DocumentListener {
+    #[cfg(target_os = "macos")]
+    _registration: fmv_macos_events::Registration,
+}
+
 #[cfg(not(target_arch = "wasm32"))]
-pub fn forced_renderer(arg: Option<&str>) -> Option<eframe::Renderer> {
+pub fn listen_for_documents() -> DocumentListener {
+    #[cfg(target_os = "macos")]
+    {
+        let (registration, inbox) = fmv_macos_events::Registration::install();
+        MAC_INBOX.with(|i| *i.borrow_mut() = Some(inbox));
+        DocumentListener { _registration: registration }
+    }
+    #[cfg(not(target_os = "macos"))]
+    DocumentListener {}
+}
+
+/// A request that arrives while the app is idle wakes it.
+#[cfg_attr(not(target_os = "macos"), allow(unused_variables))]
+pub fn wake_on_requests(ctx: &egui::Context) {
+    #[cfg(target_os = "macos")]
+    MAC_INBOX.with(|i| {
+        if let Some(inbox) = i.borrow().as_ref() {
+            let ctx = ctx.clone();
+            inbox.set_wake(move || ctx.request_repaint());
+        }
+    });
+}
+
+/// Arguments the system adds that aren't files: macOS before 10.9 passed `-psn_0_12345` (the
+/// process serial number) to apps started from Finder.
+pub fn is_system_argument(arg: &str) -> bool {
+    arg.starts_with("-psn_")
+}
+
+/// The window's graphics asked for by `--renderer` / `ANICRAFT_RENDERER`, if any: `gl`,
+/// `wgpu` (automatic), `vulkan`, `dx12` or `metal`. Before #207 the last three all meant `wgpu`.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn forced_backend(arg: Option<&str>) -> Option<WindowBackend> {
     let v = arg.map(str::to_owned).or_else(|| std::env::var("ANICRAFT_RENDERER").ok())?;
-    match v.to_ascii_lowercase().as_str() {
-        "gl" | "glow" | "opengl" => Some(eframe::Renderer::Glow),
-        "wgpu" | "vulkan" | "metal" | "dx12" => Some(eframe::Renderer::Wgpu),
+    match v.trim().to_ascii_lowercase().as_str() {
+        "gl" | "glow" | "opengl" => Some(WindowBackend::OpenGl),
+        "wgpu" | "auto" => Some(WindowBackend::Auto),
+        "vulkan" => Some(WindowBackend::Vulkan),
+        "dx12" | "d3d12" | "directx" => Some(WindowBackend::Dx12),
+        "metal" => Some(WindowBackend::Metal),
         _ => None,
+    }
+}
+
+/// The ways to open the window on `os`, in the order Automatic tries them (`startup`, #207):
+/// each a graphics interface and whether to ask for the low-power GPU. On a laptop with two
+/// GPUs (a Surface Book, most gaming laptops) the integrated one drives the display, so the
+/// second try is the system's own interface on it; OpenGL is the last resort everywhere.
+pub fn window_attempts(os: Os) -> Vec<(WindowBackend, bool)> {
+    match os {
+        Os::Windows => vec![(WindowBackend::Auto, false), (WindowBackend::Dx12, true), (WindowBackend::OpenGl, false)],
+        Os::Mac => vec![(WindowBackend::Auto, false), (WindowBackend::Metal, true), (WindowBackend::OpenGl, false)],
+        _ => vec![(WindowBackend::Auto, false), (WindowBackend::Vulkan, true), (WindowBackend::OpenGl, false)],
+    }
+}
+
+/// The window graphics Preferences offers on `os`.
+pub fn window_backends(os: Os) -> &'static [WindowBackend] {
+    match os {
+        Os::Windows => &[WindowBackend::Auto, WindowBackend::Dx12, WindowBackend::Vulkan, WindowBackend::OpenGl],
+        Os::Mac => &[WindowBackend::Auto, WindowBackend::Metal, WindowBackend::OpenGl],
+        Os::Web => &[],
+        _ => &[WindowBackend::Auto, WindowBackend::Vulkan, WindowBackend::OpenGl],
+    }
+}
+
+/// Where the start-up log goes (#207): `Logs` in the settings folder. `ANICRAFT_LOG_DIR`
+/// points it elsewhere (tests, portable installs).
+pub fn log_dir() -> Option<PathBuf> {
+    match std::env::var_os("ANICRAFT_LOG_DIR").filter(|v| !v.is_empty()) {
+        Some(d) => Some(PathBuf::from(d)),
+        None => config_dir().map(|d| d.join("Logs")), // i18n-exempt: a folder name
     }
 }
 
@@ -237,24 +816,30 @@ pub fn filters(cmd: &str) -> (&'static str, &'static [&'static str]) {
     match cmd {
         "file.export_png" => (tr_noop!("PNG image"), &["png"]),
         "file.export_gif" => (tr_noop!("Animated GIF"), &["gif"]),
+        "file.export_apng" => (tr_noop!("Animated PNG"), &["png", "apng"]),
+        "file.export_webp" => (tr_noop!("Animated WebP"), &["webp"]),
         "file.export_svg" => (tr_noop!("SVG image"), &["svg"]),
         "file.export_lottie" => (tr_noop!("Lottie animation"), &["json"]),
         "file.export_html" => (tr_noop!("Web page"), &["html", "htm"]),
         "file.import" => (tr_noop!("Drawing, image or sound"), &["svg", "png", "jpg", "jpeg", "wav", "ogg", "mp3"]),
-        "file.import_to_library" => (tr_noop!("Sound or image"), &["wav", "ogg", "mp3", "png", "jpg", "jpeg"]),
+        "file.import_to_library" => (tr_noop!("Sound, image or drawing"), &["wav", "ogg", "mp3", "png", "jpg", "jpeg", "svg"]),
         "file.export_audio" => (tr_noop!("WAV sound"), &["wav"]),
         "file.export_sprite_sheet" => (tr_noop!("PNG sprite sheet"), &["png"]),
         "file.export_video" => (tr_noop!("Video (WebM or MP4)"), &["webm", "mp4"]),
         // Opening also imports .fla archives and .xfl packages.
         "file.open" => (tr_noop!("Documents"), &["anicraft", "fla", "xfl"]),
         "plugin.install" => (tr_noop!("WebAssembly plug-in"), &["wasm"]),
+        "brush.preset_export" | "brush.preset_import" => (tr_noop!("Brush set"), &["json"]),
+        "filter.preset_export" | "filter.preset_import" => (tr_noop!("Filter preset file"), &["json"]),
+        "swatch.export" => (tr_noop!("Swatch file"), &["json"]),
+        "swatch.import" => (tr_noop!("Swatch file or GIMP palette"), &["json", "gpl"]),
         _ => (tr_noop!("AniCraft document"), &["anicraft"]),
     }
 }
 
 /// Commands that read a file the user picks (the others write one, or a folder of them).
 pub fn reads_file(cmd: &str) -> bool {
-    matches!(cmd, "file.open" | "plugin.install" | "file.import" | "file.import_to_library")
+    matches!(cmd, "file.open" | "plugin.install" | "file.import" | "file.import_to_library" | "brush.preset_import" | "filter.preset_import" | "swatch.import")
 }
 
 /// Shows the platform's own dialog (Windows common dialog, macOS panel, Linux XDG portal), with
@@ -268,6 +853,17 @@ pub fn file_dialog(cmd: &str, title: &str, default_name: &str) -> Option<PathBuf
         "file.export_png_sequence" => d.pick_folder(),
         _ => d.add_filter(label, exts).set_file_name(default_name).save_file(),
     }
+}
+
+/// The platform's save dialog for a file type that isn't a command's (an exporter plug-in's,
+/// ADR 0088): `label` names it in the filter, `ext` without the dot. `None` when cancelled.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn save_dialog(title: &str, label: &str, ext: &str, dir: Option<&std::path::Path>, default_name: &str) -> Option<PathBuf> {
+    let mut d = rfd::FileDialog::new().set_title(title).add_filter(label, &[ext]).set_file_name(default_name);
+    if let Some(dir) = dir.filter(|d| d.is_dir()) {
+        d = d.set_directory(dir);
+    }
+    d.save_file()
 }
 
 /// In a browser: asks for a file with the browser's file picker. It arrives later through
@@ -315,6 +911,21 @@ mod tests {
     use super::*;
 
     #[test]
+    fn the_mac_menu_row_is_never_under_an_opaque_title_bar() {
+        // #247: content under the title bar (full-size content view) with the bar still drawn
+        // hid File, Edit and the rest on macOS. Whenever content goes under it, it is see-through.
+        for os in [Os::Mac, Os::Windows, Os::Linux] {
+            let b = chrome(os, egui::ViewportBuilder::default());
+            if b.fullsize_content_view == Some(true) {
+                assert_eq!(b.titlebar_shown, Some(false), "{os:?}: the title bar would cover the menus");
+                assert_ne!(b.titlebar_buttons_shown, Some(false), "{os:?}: keep the traffic lights");
+            }
+        }
+        assert_eq!(chrome(Os::Mac, egui::ViewportBuilder::default()).fullsize_content_view, Some(true));
+        assert_eq!(chrome(Os::Windows, egui::ViewportBuilder::default()).fullsize_content_view, None, "native frame");
+    }
+
+    #[test]
     fn the_desktop_runs_every_command() {
         assert!(anicraft_engine::commands().iter().all(|c| unavailable(c.id).is_none()));
         assert!(reads_file("file.open") && reads_file("file.import") && !reads_file("file.save"));
@@ -328,6 +939,8 @@ mod tests {
         assert_eq!(shortcut_label_for(Os::Mac, "Delete", true), "⌫");
         assert_eq!(shortcut_label_for(Os::Mac, "F6", true), "F6");
         assert_eq!(shortcut_label_for(Os::Mac, "Ctrl++", true), "⌘+");
+        assert_eq!(shortcut_label_for(Os::Mac, "Space+Drag", true), "Space+Drag");
+        assert_eq!(shortcut_label_for(Os::Mac, "Shift+Click", true), "⇧Click");
     }
 
     #[test]
@@ -337,9 +950,161 @@ mod tests {
         }
     }
 
+    /// Test Movie gets a window of its own wherever the windowing layer can make one and the user
+    /// wants it; elsewhere it floats inside the editor and says why (ADR 0062).
+    #[test]
+    fn test_movie_falls_back_inside_the_editor_and_says_why() {
+        for os in [Os::Windows, Os::Mac, Os::Linux] {
+            assert_eq!(movie_host_for(os, false, true), MovieHost::Window, "{os:?}");
+            assert_eq!(movie_host_for(os, false, false), MovieHost::Inside(Inside::Chosen));
+            assert_eq!(movie_host_for(os, true, true), MovieHost::Inside(Inside::NoWindows));
+        }
+        // A web page never has a second window, whatever egui or the preference say.
+        assert_eq!(movie_host_for(Os::Web, false, true), MovieHost::Inside(Inside::WebPage));
+        assert!(Inside::Chosen.note().is_none(), "the user's own choice needs no explaining");
+        assert!(Inside::WebPage.note().is_some_and(|n| n.contains("web page")) && Inside::NoWindows.note().is_some());
+        // eframe embeds viewports where it can't open windows (the web, a headless context).
+        assert!(egui::Context::default().embed_viewports());
+    }
+
+    #[test]
+    fn wayland_hides_window_positions() {
+        assert!(window_positions_for(Os::Windows, false, None) && window_positions_for(Os::Mac, true, None));
+        assert!(window_positions_for(Os::Linux, false, None), "X11");
+        assert!(!window_positions_for(Os::Linux, true, None), "Wayland");
+        assert!(window_positions_for(Os::Linux, true, Some("X11")), "XWayland, chosen");
+        assert!(!window_positions_for(Os::Web, false, None));
+    }
+
+    #[test]
+    fn a_remembered_place_is_used_only_where_the_window_can_be_seen() {
+        let monitor = Some(egui::vec2(1920.0, 1080.0));
+        assert_eq!(usable_position([100.0, 80.0], monitor), Some(egui::pos2(100.0, 80.0)));
+        assert!(usable_position([-1500.0, 100.0], monitor).is_some(), "a monitor to the left");
+        assert!(usable_position([2500.0, 100.0], monitor).is_some(), "a monitor to the right");
+        assert_eq!(usable_position([90_000.0, 0.0], monitor), None, "lost far off-screen");
+        assert_eq!(usable_position([f32::NAN, 0.0], monitor), None);
+        assert!(usable_position([3000.0, 10.0], None).is_some(), "without the screen's size, a broad check");
+    }
+
+    #[test]
+    fn system_requests_arrive_in_order_and_are_bounded() {
+        assert!(take_requests().is_empty());
+        push_request(SystemRequest::Open(vec![PathBuf::from("a.anicraft")]));
+        push_request(SystemRequest::Quit);
+        assert_eq!(take_requests(), vec![SystemRequest::Open(vec![PathBuf::from("a.anicraft")]), SystemRequest::Quit]);
+        assert!(take_requests().is_empty(), "each is handled once");
+        for _ in 0..1000 {
+            push_request(SystemRequest::Quit);
+        }
+        assert_eq!(take_requests().len(), MAX_REQUESTS);
+        assert!(is_system_argument("-psn_0_8194") && !is_system_argument("walk.anicraft"));
+    }
+
+    #[test]
+    fn portal_replies_parse() {
+        assert_eq!(parse_portal_uint("(<<uint32 1>>,)"), Some(1));
+        assert_eq!(parse_portal_uint("(<uint32 0>,)
+"), Some(0));
+        assert_eq!(parse_portal_uint("Error: no such key"), None);
+        // color-scheme: 1 dark, 2 light, 0 (no preference) and anything else say nothing.
+        assert_eq!([0, 1, 2, 7].map(scheme_from_portal), [None, Some(true), Some(false), None]);
+    }
+
+    #[test]
+    fn the_system_contrast_setting_can_be_read_without_panicking() {
+        // Whatever this machine says (or doesn't), asking never fails loudly.
+        let _ = system_high_contrast();
+        let look = system_look();
+        assert_eq!(look.dark, system_dark_mode());
+    }
+
     #[test]
     fn renderer_override() {
-        assert_eq!(forced_renderer(Some("gl")), Some(eframe::Renderer::Glow));
-        assert_eq!(forced_renderer(Some("WGPU")), Some(eframe::Renderer::Wgpu));
+        assert_eq!(forced_backend(Some("gl")), Some(WindowBackend::OpenGl));
+        assert_eq!(forced_backend(Some("WGPU")), Some(WindowBackend::Auto));
+        // #207: each interface is its own choice now, not just "wgpu".
+        assert_eq!(forced_backend(Some("dx12")), Some(WindowBackend::Dx12));
+        assert_eq!(forced_backend(Some("vulkan")), Some(WindowBackend::Vulkan));
+        assert_eq!(forced_backend(Some("metal")), Some(WindowBackend::Metal));
+    }
+
+    #[test]
+    fn every_platform_falls_back_to_opengl_and_offers_what_it_tries() {
+        for os in [Os::Windows, Os::Mac, Os::Linux, Os::Other] {
+            let tries = window_attempts(os);
+            assert_eq!(tries.first(), Some(&(WindowBackend::Auto, false)), "{os:?}");
+            assert_eq!(tries.last(), Some(&(WindowBackend::OpenGl, false)), "{os:?}: OpenGL is the last resort");
+            assert!(tries.iter().all(|(b, _)| window_backends(os).contains(b)), "{os:?}: Preferences offers each");
+        }
+        assert!(window_attempts(Os::Windows).contains(&(WindowBackend::Dx12, true)), "DirectX 12 on the integrated GPU");
+    }
+
+    /// A made-up file system: the files that exist.
+    fn files(list: &[&str]) -> impl Fn(&Path) -> bool {
+        let set: Vec<PathBuf> = list.iter().map(PathBuf::from).collect();
+        move |p: &Path| set.iter().any(|f| f == p)
+    }
+
+    #[test]
+    fn a_marker_beside_the_program_makes_each_layout_portable() {
+        let none = files(&[]);
+        // Windows zip: the marker next to anicraft.exe.
+        let zip = files(&["D:/Tools/AniCraft/anicraft-portable"]);
+        assert_eq!(portable_root_for(Os::Windows, Path::new("D:/Tools/AniCraft/anicraft.exe"), None, &zip), Some(PathBuf::from("D:/Tools/AniCraft")));
+        assert_eq!(portable_root_for(Os::Windows, Path::new("D:/Tools/AniCraft/anicraft.exe"), None, &none), None, "an installed copy has no marker");
+        // Linux tar.gz: the marker at the top, above bin/.
+        let tar = files(&["/home/a b/anicraft-0.1.0-linux-x86_64/anicraft-portable"]);
+        assert_eq!(portable_root_for(Os::Linux, Path::new("/home/a b/anicraft-0.1.0-linux-x86_64/bin/anicraft"), None, &tar), Some(PathBuf::from("/home/a b/anicraft-0.1.0-linux-x86_64")));
+        // A package's /usr/bin/anicraft is never portable (no marker in /usr or /usr/bin).
+        assert_eq!(portable_root_for(Os::Linux, Path::new("/usr/bin/anicraft"), None, &tar), None);
+        // macOS: next to AniCraft.app, not inside it.
+        let mac = files(&["/Volumes/Stick/anicraft-portable"]);
+        assert_eq!(portable_root_for(Os::Mac, Path::new("/Volumes/Stick/AniCraft.app/Contents/MacOS/anicraft"), None, &mac), Some(PathBuf::from("/Volumes/Stick")));
+        let inside = files(&["/Volumes/Stick/AniCraft.app/Contents/MacOS/anicraft-portable"]);
+        assert_eq!(portable_root_for(Os::Mac, Path::new("/Volumes/Stick/AniCraft.app/Contents/MacOS/anicraft"), None, &inside), None, "never inside the signed bundle");
+        // AppImage: next to the .AppImage file; the mounted image doesn't count.
+        let img = files(&["/home/ana/Apps/anicraft-portable", "/tmp/.mount_AniCrXYZ/usr/bin/anicraft-portable"]);
+        let exe = Path::new("/tmp/.mount_AniCrXYZ/usr/bin/anicraft");
+        assert_eq!(portable_root_for(Os::Linux, exe, Some(Path::new("/home/ana/Apps/AniCraft.AppImage")), &img), Some(PathBuf::from("/home/ana/Apps")));
+        assert_eq!(portable_root_for(Os::Linux, exe, Some(Path::new("/elsewhere/AniCraft.AppImage")), &img), None);
+        assert_eq!(portable_root_for(Os::Web, Path::new("/x/anicraft"), None, &files(&["/x/anicraft-portable"])), None);
+    }
+
+    #[test]
+    fn portable_data_wins_over_every_settings_folder_and_unwritable_falls_back() {
+        let env = |k: &str| match k {
+            "APPDATA" => Some(PathBuf::from("C:/Users/ana/AppData/Roaming")),
+            "HOME" => Some(PathBuf::from("/home/ana")),
+            _ => None,
+        };
+        assert_eq!(config_dir_for(Os::Windows, None, &env), Some(PathBuf::from("C:/Users/ana/AppData/Roaming/AniCraft")));
+        assert_eq!(config_dir_for(Os::Mac, None, &env), Some(PathBuf::from("/home/ana/Library/Application Support/AniCraft")));
+        assert_eq!(config_dir_for(Os::Linux, None, &env), Some(PathBuf::from("/home/ana/.config/anicraft")));
+        assert_eq!(config_dir_for(Os::Web, None, &env), None);
+        let data = Path::new("D:/Tools/AniCraft/data");
+        for os in [Os::Windows, Os::Mac, Os::Linux] {
+            assert_eq!(config_dir_for(os, Some(data), &env).as_deref(), Some(data), "{os:?}");
+        }
+        // The data folder is `data` beside the marker, used when it can be written.
+        let ok = placement_for(Some(Path::new("/media/stick")), &|_| Ok(()));
+        assert_eq!(ok.portable, Some(PathBuf::from("/media/stick").join(PORTABLE_DATA)));
+        let ro = placement_for(Some(Path::new("/media/cd")), &|_| Err("read-only file system".into()));
+        assert_eq!((ro.portable, ro.unwritable.map(|(d, _)| d)), (None, Some(PathBuf::from("/media/cd").join(PORTABLE_DATA))));
+        assert_eq!(placement_for(None, &|_| Ok(())), Placement::default());
+    }
+
+    #[test]
+    fn the_desktop_data_folder_follows_xdg() {
+        let with = |xdg: Option<&'static str>| move |k: &str| match k {
+            "XDG_DATA_HOME" => xdg.map(PathBuf::from),
+            "HOME" => Some(PathBuf::from("/home/a b")),
+            _ => None,
+        };
+        assert_eq!(data_home_for(&with(Some("/data/me"))), Some(PathBuf::from("/data/me")));
+        assert_eq!(data_home_for(&with(None)), Some(PathBuf::from("/home/a b/.local/share")));
+        assert_eq!(data_home_for(&with(Some("relative"))), Some(PathBuf::from("/home/a b/.local/share")), "a relative XDG_DATA_HOME is ignored");
+        // This test process is not portable: no marker beside the test binary.
+        assert_eq!(placement().portable, None);
     }
 }

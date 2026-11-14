@@ -19,20 +19,14 @@ pub fn specs() -> Vec<CommandSpec> {
 }
 
 /// A raw shape the merge can take: any fill (solid, gradient or bitmap: the paint is carried
-/// into each piece, ADR 0042) or none, and a stroke of one width or none. A width profile runs
-/// along the whole stroke, so cutting it would need its length carried through the merge; those
-/// strokes stay whole, as objects, for now.
+/// into each piece, ADR 0042) or none, and any stroke or none. A stroke's width profile is
+/// carried into each piece of it (ADR 0093): the merge says which stretch of the stroke each
+/// piece runs along, and the piece keeps the widths it had there.
 pub(crate) fn mergeable(e: &Element) -> Option<&Shape> {
     match &e.kind {
-        ElementKind::Shape(s) if s.merge && s.stroke.as_ref().is_none_or(|st| st.profile.is_none()) => Some(s),
+        ElementKind::Shape(s) if s.merge => Some(s),
         _ => None,
     }
-}
-
-/// Whether a new shape with this style can join the drawing (strokes with a width profile are
-/// drawn as objects for now).
-pub(crate) fn can_merge(stroke: Option<&Stroke>) -> bool {
-    stroke.is_none_or(|st| st.profile.is_none())
 }
 
 pub(crate) fn reach(s: &Shape, m: &Affine) -> Rect {
@@ -140,6 +134,9 @@ fn remerge_doc(doc: &mut Document, parts: &[Part], cutter: Option<&Path>) -> Opt
     // Style tables: equal entries are one style to the merge.
     let mut fills: Vec<(Paint, ColorEffect)> = Vec::new();
     let mut strokes: Vec<(Stroke, ColorEffect)> = Vec::new();
+    // A stroke with a width profile is a style of its own (its pieces never chain into another
+    // stroke's), with the path its profile runs along (an index into `paths`).
+    let mut profiled: Vec<(u32, usize)> = Vec::new();
     let mut paths: Vec<Path> = Vec::with_capacity(parts.len());
     let mut styles: Vec<(Option<u32>, Option<u32>, anicraft_geom::FillRule)> = Vec::with_capacity(parts.len());
     let mut marked: Vec<bool> = Vec::with_capacity(parts.len());
@@ -151,7 +148,17 @@ fn remerge_doc(doc: &mut Document, parts: &[Part], cutter: Option<&Path>) -> Opt
                 // Gradients and bitmaps are placed in keyframe space, so every piece shows its
                 // part of the paint where it was.
                 let fill = sh.fill.as_ref().map(|f| fill_index(&mut fills, (f.transformed(&e.transform), e.color)));
-                let stroke = sh.stroke.clone().map(|st| index_of(&mut strokes, (st.scaled(e.transform.mean_scale()), e.color)));
+                let stroke = sh.stroke.clone().map(|st| {
+                    let st = (st.scaled(e.transform.mean_scale()), e.color);
+                    if st.0.profile.is_some() {
+                        strokes.push(st);
+                        let i = (strokes.len() - 1) as u32;
+                        profiled.push((i, paths.len() - 1));
+                        i
+                    } else {
+                        index_of(&mut strokes, st)
+                    }
+                });
                 styles.push((fill, stroke, sh.fill_rule));
                 marked.push(*mark);
             }
@@ -178,7 +185,12 @@ fn remerge_doc(doc: &mut Document, parts: &[Part], cutter: Option<&Path>) -> Opt
             (Some(f.clone()), None, *c)
         } else {
             let Some((st, c)) = strokes.get(piece.style as usize) else { continue };
-            (None, Some(st.clone()), *c)
+            let mut st = st.clone();
+            // Each piece of a variable-width stroke keeps the widths it had (ADR 0093).
+            if let (Some(profile), Some(path)) = (&st.profile, profiled.iter().find(|(i, _)| *i == piece.style).and_then(|(_, p)| paths.get(*p))) {
+                st.profile = profile.along(path, &piece.spans);
+            }
+            (None, Some(st), *c)
         };
         // Local origin at the centre of the piece, as the drawing tools place shapes.
         let c = piece.path.bounds().center();
@@ -197,7 +209,7 @@ fn remerge_doc(doc: &mut Document, parts: &[Part], cutter: Option<&Path>) -> Opt
             name: String::new(),
             transform: Affine::translate(c.x, c.y),
             color,
-            kind: ElementKind::Shape(Shape { path: Arc::new(piece.path.transformed(&Affine::translate(-c.x, -c.y))), fill: fill.map(|f| f.transformed(&Affine::translate(-c.x, -c.y))), stroke, fill_rule: Default::default(), merge: true }),
+            kind: ElementKind::Shape(Shape { path: Arc::new(piece.path.transformed(&Affine::translate(-c.x, -c.y))), fill: fill.map(|f| f.transformed(&Affine::translate(-c.x, -c.y))), stroke, fill_rule: Default::default(), merge: true, warp: None }),
         }));
     }
     Some(Remerged { out, picked, inside, from })
@@ -245,13 +257,20 @@ fn fill_index(table: &mut Vec<(Paint, ColorEffect)>, v: (Paint, ColorEffect)) ->
 }
 
 /// Whether two paints look the same (positions within a thousandth of a unit).
-pub(crate) fn same_paint(a: &Paint, b: &Paint) -> bool {
+pub(crate) fn same_paint(x: &Paint, y: &Paint) -> bool {
     const EPS: f32 = 1e-3;
     let near = |p: Vec2, q: Vec2| p.distance(q) <= EPS;
-    match (a, b) {
+    match (x, y) {
         (Paint::Solid(x), Paint::Solid(y)) => x == y,
-        (Paint::Linear { start: s0, end: e0, stops: a }, Paint::Linear { start: s1, end: e1, stops: b }) => near(*s0, *s1) && near(*e0, *e1) && a == b,
-        (Paint::Radial { center: c0, radius: r0, stops: a }, Paint::Radial { center: c1, radius: r1, stops: b }) => near(*c0, *c1) && (r0 - r1).abs() <= EPS && a == b,
+        (Paint::Linear { start: s0, end: e0, stops: a, spread: p0, linear_rgb: l0 }, Paint::Linear { start: s1, end: e1, stops: b, spread: p1, linear_rgb: l1 }) => near(*s0, *s1) && near(*e0, *e1) && a == b && p0 == p1 && l0 == l1,
+        (Paint::Radial { stops: a, spread: p0, linear_rgb: l0, focal: f0, .. }, Paint::Radial { stops: b, spread: p1, linear_rgb: l1, focal: f1, .. }) => {
+            // The same ring: the frames agree (centre, axes and size).
+            let same_frame = match (x.frame(None), y.frame(None)) {
+                (Some(m0), Some(m1)) => m0.m.iter().zip(m1.m).all(|(u, v)| (u - v).abs() <= EPS * u.abs().max(v.abs()).max(1.0)),
+                _ => false,
+            };
+            same_frame && a == b && p0 == p1 && l0 == l1 && (f0 - f1).abs() <= EPS
+        }
         (Paint::Bitmap { bitmap: b0, repeat: r0, matrix: m0 }, Paint::Bitmap { bitmap: b1, repeat: r1, matrix: m1 }) => {
             b0 == b1 && r0 == r1 && m0.m.iter().zip(m1.m).all(|(x, y)| (x - y).abs() <= EPS * x.abs().max(y.abs()).max(1.0))
         }
@@ -272,6 +291,11 @@ fn index_of<T: PartialEq>(table: &mut Vec<T>, v: T) -> u32 {
 /// `draw.drop`: the selected raw shapes go back into the drawing, on top (Animate merges a moved
 /// shape when it is let go).
 fn drop(s: &mut Session, _: &Value) -> Result<Value> {
+    drop_selected(s)
+}
+
+/// [`drop`] on the active layer (also when an envelope closes, ADR 0080).
+pub(crate) fn drop_selected(s: &mut Session) -> Result<Value> {
     let sel = s.selection.on(s.layer);
     let kf = s.editable_keyframe()?;
     let mut moving = Vec::new();
@@ -380,8 +404,28 @@ pub(crate) fn merge_document(doc: &mut Document) -> usize {
 }
 
 fn merge_timeline(doc: &mut Document, tl: &mut Timeline) -> usize {
+    merge_timeline_at(doc, tl, 0)
+}
+
+/// [`merge_timeline`], inside groups too (ADR 0073): a group's raw shapes merge with each other.
+fn merge_timeline_at(doc: &mut Document, tl: &mut Timeline, depth: usize) -> usize {
     let mut n = 0;
+    let is_group = |e: &Element| matches!(e.kind, ElementKind::Group { .. });
     for layer in tl.layers.iter_mut() {
+        if depth < anicraft_doc::MAX_GROUP_DEPTH && layer.keyframes.iter().any(|k| k.elements.iter().any(|e| is_group(e))) {
+            let layer = Arc::make_mut(layer);
+            for kf in layer.keyframes.iter_mut().filter(|k| k.elements.iter().any(|e| is_group(e))) {
+                for e in Arc::make_mut(kf).elements.iter_mut().filter(|e| is_group(e)) {
+                    let ElementKind::Group { members } = &e.kind else { continue };
+                    let mut members = members.clone();
+                    let k = merge_timeline_at(doc, &mut members, depth + 1);
+                    if k > 0 {
+                        Arc::make_mut(e).kind = ElementKind::Group { members };
+                        n += k;
+                    }
+                }
+            }
+        }
         if !layer.keyframes.iter().any(|k| k.elements.iter().any(|e| mergeable(e).is_some())) {
             continue;
         }

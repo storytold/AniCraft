@@ -8,7 +8,7 @@ cd "$(dirname "$0")"
 cargo build --release --target wasm32-unknown-unknown
 out="${CARGO_TARGET_DIR:-target}/wasm32-unknown-unknown/release"
 mkdir -p dist
-for name in star_field jitter; do
+for name in star_field jitter text_export stepped_ease; do
     cp "$out/anicraft_plugin_$name.wasm" "dist/$name.wasm"
     echo "dist/$name.wasm: $(wc -c < "dist/$name.wasm") bytes"
 done

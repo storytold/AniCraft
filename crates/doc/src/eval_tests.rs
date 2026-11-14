@@ -1,5 +1,5 @@
 use super::*;
-use crate::{Easing, Keyframe, Symbol, SymbolId, SymbolKind, Tween, TweenKind};
+use crate::{ColorEffect, Easing, Keyframe, Symbol, SymbolId, SymbolKind, Tween, TweenKind};
 
 fn shape_el(id: u64, x: f32) -> Element {
     Element {
@@ -85,7 +85,7 @@ fn nested_symbols_compose_transforms_and_cycles_terminate() {
         },
     );
     tl.layers.push(Arc::new(layer));
-    d.library.push(Arc::new(Symbol { id: sid, name: "loop".into(), kind: SymbolKind::Graphic, linkage: None, timeline: tl }));
+    d.library.push(Arc::new(Symbol { id: sid, name: "loop".into(), kind: SymbolKind::Graphic, linkage: None, scale_grid_kept: None, scale_grid: None, timeline: tl }));
     push(
         layer0(&mut d),
         0,
@@ -93,7 +93,7 @@ fn nested_symbols_compose_transforms_and_cycles_terminate() {
             id: ElementId(60),
             name: String::new(),
             transform: Affine::translate(100.0, 0.0),
-            color: ColorEffect { alpha: 0.5, ..Default::default() },
+            color: ColorEffect::Alpha(0.5),
             kind: ElementKind::Symbol { symbol: sid, loop_mode: Default::default(), first_frame: 0, blend: Default::default(), filters: Vec::new(), events: Vec::new() },
         },
     );
@@ -101,7 +101,7 @@ fn nested_symbols_compose_transforms_and_cycles_terminate() {
     assert_eq!(dl.items.len(), MAX_SYMBOL_DEPTH);
     assert_eq!(dl.items[0].transform.translation().x, 100.0);
     // The instance's opacity is its group's: it fades as one.
-    assert_eq!((dl.items[0].color.alpha, dl.effective_alpha(&dl.items[0])), (1.0, 0.5));
+    assert_eq!((dl.items[0].color.mul[3], dl.effective_alpha(&dl.items[0])), (1.0, 0.5));
     assert_eq!(dl.groups.len(), 1);
     assert!(dl.items.iter().all(|i| i.element == ElementId(60)));
 }
@@ -140,7 +140,7 @@ fn masks_inside_symbols_nest_in_the_instance_clip() {
     // The main timeline's masked layer holds an instance of a symbol that has its own mask.
     let mut d = mask_doc();
     let sid = SymbolId(99);
-    d.library.push(Arc::new(Symbol { id: sid, name: "masked inside".into(), kind: SymbolKind::Graphic, linkage: None, timeline: mask_doc().timeline(0).clone() }));
+    d.library.push(Arc::new(Symbol { id: sid, name: "masked inside".into(), kind: SymbolKind::Graphic, linkage: None, scale_grid_kept: None, scale_grid: None, timeline: mask_doc().timeline(0).clone() }));
     let inst = Element {
         id: ElementId(60),
         name: String::new(),
@@ -154,6 +154,27 @@ fn masks_inside_symbols_nest_in_the_instance_clip() {
     let inner: Vec<_> = dl.items.iter().filter(|i| i.element == ElementId(60)).map(|i| (i.clip, i.masks)).collect();
     // inside: unmasked layer keeps the outer clip; masked layers use the nested clip.
     assert_eq!(inner, vec![(Some(0), None), (Some(1), None), (Some(1), None), (Some(0), Some(1))]);
+}
+
+#[test]
+fn a_soft_mask_layer_gives_its_clip_its_mode() {
+    let mut d = mask_doc();
+    assert_eq!((evaluate(&d, 0).clip_mode(0), evaluate(&d, 0).clip_modes.len()), (crate::MaskMode::Coverage, 0), "coverage stays implicit");
+    Arc::make_mut(&mut d.timeline_mut(0).layers[0]).mask_mode = crate::MaskMode::Luminance;
+    let dl = evaluate(&d, 0);
+    assert_eq!(dl.clip_mode(0), crate::MaskMode::Luminance);
+    // Appended lists keep their modes on their renumbered clips.
+    let mut a = evaluate(&mask_doc(), 0);
+    a.append(dl);
+    assert_eq!((a.clip_mode(0), a.clip_mode(1)), (crate::MaskMode::Coverage, crate::MaskMode::Luminance));
+    // The mode is saved only when it isn't coverage, and older files (without it) open as coverage.
+    let json = serde_json::to_string(&*d.timeline(0).layers[0]).unwrap();
+    assert!(json.contains("\"mask_mode\":\"luminance\""), "{json}");
+    let plain = serde_json::to_string(&*mask_doc().timeline(0).layers[0]).unwrap();
+    assert!(!plain.contains("mask_mode"));
+    let back: Layer = serde_json::from_str(&json).unwrap();
+    assert_eq!(back.mask_mode, crate::MaskMode::Luminance);
+    assert_eq!(serde_json::from_str::<Layer>(&plain).unwrap().mask_mode, crate::MaskMode::Coverage);
 }
 
 #[test]
@@ -295,7 +316,7 @@ fn movie_clips_play_their_own_timeline_graphics_keep_step_buttons_hold_up() {
         })
         .collect();
     let mut d = Document::default();
-    d.library.push(Arc::new(Symbol { id: sid, name: "Clip".into(), kind: SymbolKind::MovieClip, linkage: None, timeline: Timeline { layers: vec![Arc::new(st)] } }));
+    d.library.push(Arc::new(Symbol { id: sid, name: "Clip".into(), kind: SymbolKind::MovieClip, linkage: None, scale_grid_kept: None, scale_grid: None, timeline: Timeline { layers: vec![Arc::new(st)] } }));
     // The same instance on two keyframes back to back (frames 0–4 and 5–11), moved on the second.
     let inst = |x: f32| Element {
         id: ElementId(60),
@@ -352,7 +373,7 @@ fn a_motion_tween_drives_each_property_on_its_own_curve() {
     let d = motion_doc();
     let at = |f| {
         let dl = evaluate(&d, f);
-        (dl.items[0].transform.translation().x, dl.items[0].color.alpha)
+        (dl.items[0].transform.translation().x, dl.items[0].color.mul[3])
     };
     assert_eq!(at(0), (0.0, 1.0));
     // X eases in over 0..12 (a quarter of the way at half time); alpha runs linearly over 0..23.
@@ -462,4 +483,105 @@ fn shape_hints_survive_a_round_trip_and_old_files_have_none() {
     assert!(!plain.contains("hints"));
     let old: Keyframe = serde_json::from_str(r#"{"start":0,"duration":3}"#).unwrap();
     assert!(old.hints.is_empty());
+}
+
+/// A tween from (0, 0), unturned, full size and opaque to (100, 0), half a turn, double size
+/// and transparent, over 10 frames.
+fn group_doc(tween: Tween) -> Document {
+    let mut d = Document::default();
+    let mut a = shape_el(10, 0.0);
+    a.color = ColorEffect::Alpha(1.0);
+    let mut b = shape_el(10, 100.0);
+    b.transform = Affine::translate(100.0, 0.0).mul(&Affine::rotate(std::f32::consts::FRAC_PI_2)).mul(&Affine::scale(2.0, 2.0));
+    b.color = ColorEffect::Alpha(0.0);
+    let mut k0 = Keyframe::new(0, 10);
+    k0.elements.push(Arc::new(a));
+    k0.tween = Some(tween);
+    let mut k1 = Keyframe::new(10, 1);
+    k1.elements.push(Arc::new(b));
+    layer0(&mut d).keyframes = vec![Arc::new(k0), Arc::new(k1)];
+    d
+}
+
+#[test]
+fn classic_tweens_ease_each_property_group_its_own_way() {
+    use crate::EaseGroup;
+    let mut tw = Tween::new(Easing::Linear, TweenKind::Classic);
+    tw.set_ease(EaseGroup::Position, Some(Easing::BounceOut));
+    tw.set_ease(EaseGroup::Scale, Some(Easing::QuadIn));
+    tw.set_ease(EaseGroup::Color, Some(Easing::CubicOut));
+    let d = group_doc(tw.clone());
+    let it = |f| {
+        let dl = evaluate(&d, f);
+        let i = &dl.items[0];
+        (i.transform.decompose(), i.color.mul[3])
+    };
+    let (m, alpha) = it(5);
+    assert!((m.tx - 100.0 * Easing::BounceOut.apply(0.5)).abs() < 1e-2, "position: {}", m.tx);
+    assert!((m.sx - (1.0 + Easing::QuadIn.apply(0.5))).abs() < 1e-3, "scale: {}", m.sx);
+    // Rotation has no ease of its own: the tween's (linear).
+    assert!((m.rotation - std::f32::consts::FRAC_PI_4).abs() < 1e-3, "rotation: {}", m.rotation);
+    assert!((alpha - (1.0 - Easing::CubicOut.apply(0.5))).abs() < 1e-3, "colour: {alpha}");
+    // Groups stay in order, once each; clearing one gives it the tween's ease again.
+    tw.set_ease(EaseGroup::Position, Some(Easing::SineIn));
+    assert_eq!(tw.groups.iter().map(|g| g.0).collect::<Vec<_>>(), [EaseGroup::Position, EaseGroup::Scale, EaseGroup::Color]);
+    tw.set_ease(EaseGroup::Scale, None);
+    assert_eq!(tw.ease(EaseGroup::Scale), &Easing::Linear);
+    // With one ease for everything, every group follows it exactly as before.
+    let one = group_doc(Tween::new(Easing::QuadOut, TweenKind::Classic));
+    let mut same = Tween::new(Easing::QuadOut, TweenKind::Classic);
+    for g in EaseGroup::ALL {
+        same.set_ease(g, Some(Easing::QuadOut));
+    }
+    let both = group_doc(same);
+    for f in 0..=10 {
+        assert_eq!(evaluate(&one, f).items[0].transform, evaluate(&both, f).items[0].transform);
+    }
+    // Older files' tweens (no groups) still read.
+    let t: Tween = serde_json::from_str(r#"{"easing": "QuadIn"}"#).unwrap();
+    assert!(t.groups.is_empty());
+}
+
+#[test]
+fn a_custom_ease_drives_a_classic_tween() {
+    let c = crate::CustomEase::from_flat(&[(0.0, 0.0), (0.2, 1.5), (0.4, 1.5), (0.5, 1.2), (0.6, 0.9), (0.8, 1.0), (1.0, 1.0)].map(|(x, y)| anicraft_geom::Vec2::new(x, y))).unwrap();
+    let e = Easing::Custom(Arc::new(c.clone()));
+    let d = tween_doc(e);
+    for f in 0..10 {
+        let x = evaluate(&d, f).items[0].transform.translation().x;
+        assert!((x - 100.0 * c.apply(f as f32 / 10.0)).abs() < 1e-2, "frame {f}: {x}");
+    }
+    // It overshoots past the second keyframe and comes back.
+    assert!(evaluate(&d, 5).items[0].transform.translation().x > 100.0);
+}
+
+#[test]
+fn instance_filters_tween_when_they_pair_up() {
+    use crate::Filter;
+    let mut d = Document::default();
+    let sid = SymbolId(90);
+    d.library.push(Arc::new(Symbol { id: sid, name: "Clip".into(), kind: SymbolKind::MovieClip, linkage: None, scale_grid_kept: None, scale_grid: None, timeline: Timeline { layers: vec![Arc::new(Layer::new(LayerId(91), "x"))] } }));
+    let inst = |filters: Vec<Filter>| Element { id: ElementId(92), name: String::new(), transform: Affine::IDENTITY, color: ColorEffect::default(), kind: ElementKind::Symbol { symbol: sid, loop_mode: Default::default(), first_frame: 0, blend: Default::default(), filters: filters.into_iter().map(Into::into).collect(), events: Vec::new() } };
+    let blur = |b: f32| Filter::Blur { blur_x: b, blur_y: b, quality: 1 };
+    let mut tw = Tween::new(Easing::Linear, TweenKind::Classic);
+    tw.set_ease(crate::EaseGroup::Filters, Some(Easing::QuadIn));
+    let mut k0 = Keyframe::new(0, 10);
+    k0.elements.push(Arc::new(inst(vec![blur(0.0), Filter::new("glow").unwrap()])));
+    k0.tween = Some(tw);
+    let mut k1 = Keyframe::new(10, 1);
+    k1.elements.push(Arc::new(inst(vec![blur(40.0), Filter::new("glow").unwrap()])));
+    layer0(&mut d).keyframes = vec![Arc::new(k0), Arc::new(k1)];
+    let filters = |f| match &crate::evaluate_layer_elements(&d.timeline(0).layers[0], f).unwrap().1[0].kind {
+        ElementKind::Symbol { filters, .. } => filters.clone(),
+        _ => Vec::new(),
+    };
+    assert_eq!(filters(5)[0], blur(40.0 * 0.25).into(), "eased by the filters group's ease");
+    // Lists that don't pair up hold the first keyframe's.
+    let e = |f: Filter| crate::FilterEntry::from(f);
+    assert_eq!(crate::filter::lerp_filters(&[e(blur(1.0))], &[e(Filter::new("glow").unwrap())], 0.5), None);
+    assert_eq!(crate::filter::lerp_filters(&[e(blur(1.0))], &[e(blur(1.0)), e(blur(2.0))], 0.5), None);
+    // A switched-off filter still pairs up (and stays off, as the first keyframe has it).
+    let off = crate::FilterEntry { filter: blur(0.0), enabled: false };
+    let got = crate::filter::lerp_filters(std::slice::from_ref(&off), &[e(blur(10.0))], 0.5).unwrap();
+    assert_eq!(got, vec![crate::FilterEntry { filter: blur(5.0), enabled: false }]);
 }

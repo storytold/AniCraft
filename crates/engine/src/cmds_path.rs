@@ -116,20 +116,26 @@ fn draw_freehand(s: &mut Session, p: &Value) -> Result<Value> {
 
 // ----- point editing ----------------------------------------------------------------------
 
-/// The shape element `id` in the editable keyframe (copy-on-write), with its transform.
-fn shape_mut<'a>(s: &'a mut Session, p: &Value) -> Result<(&'a mut Shape, Affine)> {
+/// Runs `edit` on shape element `id` (param `id`) in the editable keyframe (copy-on-write), with
+/// its transform. The shape of a shape armature is reshaped at rest instead, keeping its binding
+/// (ADR 0090).
+fn edit_shape<T>(s: &mut Session, p: &Value, edit: impl FnOnce(&mut Shape, Affine) -> Result<T>) -> Result<T> {
     let id = ElementId(opt_u64(p, "id")?.ok_or_else(|| EngineError::Param("param 'id' is required".into()))?);
     if !s.visible_elements().iter().any(|e| e.id == id) {
         return Err(EngineError::State(format!("element {} is not on the active layer at this frame", id.0)));
+    }
+    if crate::cmds_bone::is_skin_shape(s, id) {
+        return crate::cmds_bone::reshape(s, id, edit);
     }
     let kf = s.editable_keyframe()?;
     let el: &mut Element = kf.elements_mut_where(|e| e == id).into_iter().next().ok_or_else(|| EngineError::State(format!("no element {}", id.0)))?;
     let m = el.transform;
     match &mut el.kind {
-        ElementKind::Shape(sh) => Ok((sh, m)),
+        ElementKind::Shape(sh) => edit(sh, m),
         ElementKind::Symbol { .. } => Err(EngineError::State("symbol instances have no points to edit (double-click to edit the symbol)".into())),
         ElementKind::Text(_) => Err(EngineError::State("text has no points to edit; break it apart (Ctrl+B) to edit its outlines".into())),
         ElementKind::Camera => Err(EngineError::State("the camera has no points to edit".into())),
+        ElementKind::Group { .. } => Err(EngineError::State("a group has no points of its own (double-click it to edit what is inside)".into())),
     }
 }
 
@@ -150,39 +156,40 @@ fn move_points(s: &mut Session, p: &Value) -> Result<Value> {
         wanted.push((usize::try_from(cmd).unwrap_or(usize::MAX), slot as u8));
     }
     let smooth = opt_bool(p, "smooth")?.unwrap_or(true);
-    let (sh, m) = shape_mut(s, p)?;
-    let inv = m.inverse().ok_or_else(|| EngineError::State("the shape is scaled to zero".into()))?;
-    let local = inv.apply_vector(d);
-    if !local.is_finite() {
-        return Err(EngineError::Param("the move is too large".into()));
-    }
-    let path = Arc::make_mut(&mut sh.path);
-    // Anchors bring their handles and their twin at a closed start; each point moves once.
-    let mut set = BTreeSet::new();
-    for (cmd, slot) in wanted {
-        if path.point(cmd, slot).is_none() {
-            return Err(EngineError::Param(format!("no point ({cmd}, {slot}) on this path")));
+    edit_shape(s, p, |sh, m| {
+        let inv = m.inverse().ok_or_else(|| EngineError::State("the shape is scaled to zero".into()))?;
+        let local = inv.apply_vector(d);
+        if !local.is_finite() {
+            return Err(EngineError::Param("the move is too large".into()));
         }
-        if slot == ANCHOR {
-            set.extend(path.anchor_group(cmd));
-        } else {
-            set.insert((cmd, slot));
+        let path = Arc::make_mut(&mut sh.path);
+        // Anchors bring their handles and their twin at a closed start; each point moves once.
+        let mut set = BTreeSet::new();
+        for (cmd, slot) in wanted {
+            if path.point(cmd, slot).is_none() {
+                return Err(EngineError::Param(format!("no point ({cmd}, {slot}) on this path")));
+            }
+            if slot == ANCHOR {
+                set.extend(path.anchor_group(cmd));
+            } else {
+                set.insert((cmd, slot));
+            }
         }
-    }
-    // The other handle of a smooth anchor whose handle moves alone (ADR 0045), as it was.
-    let partners: Vec<(usize, u8, Vec2, Vec2)> = if smooth { set.iter().filter_map(|&(cmd, slot)| partner(path, &set, cmd, slot)).collect() } else { Vec::new() };
-    for &(cmd, slot) in &set {
-        if let Some(q) = path.point(cmd, slot) {
-            path.set_point(cmd, slot, q + local);
+        // The other handle of a smooth anchor whose handle moves alone (ADR 0045), as it was.
+        let partners: Vec<(usize, u8, Vec2, Vec2)> = if smooth { set.iter().filter_map(|&(cmd, slot)| partner(path, &set, cmd, slot)).collect() } else { Vec::new() };
+        for &(cmd, slot) in &set {
+            if let Some(q) = path.point(cmd, slot) {
+                path.set_point(cmd, slot, q + local);
+            }
         }
-    }
-    for (cmd, slot, anchor, handle) in partners {
-        if let Some(k) = path.point(cmd, slot) {
-            path.set_point(cmd, slot, anicraft_geom::raw::turned_opposite(anchor, handle + local, k));
+        for (cmd, slot, anchor, handle) in partners {
+            if let Some(k) = path.point(cmd, slot) {
+                path.set_point(cmd, slot, anicraft_geom::raw::turned_opposite(anchor, handle + local, k));
+            }
         }
-    }
-    check_path(path)?;
-    Ok(json!({"moved": set.len()}))
+        check_path(path)?;
+        Ok(json!({"moved": set.len()}))
+    })
 }
 
 /// For handle `(cmd, slot)` moving alone: the other handle of its anchor when the anchor is smooth
@@ -208,46 +215,49 @@ fn partner(path: &Path, moving: &BTreeSet<(usize, u8)>, cmd: usize, slot: u8) ->
 fn add_point(s: &mut Session, p: &Value) -> Result<Value> {
     let at = Vec2::new(f32_req(p, "x")?, f32_req(p, "y")?);
     let slop = opt_f32(p, "slop")?.unwrap_or(4.0).clamp(0.0, 1000.0);
-    let (sh, m) = shape_mut(s, p)?;
-    let path = Arc::make_mut(&mut sh.path);
-    path.close_explicitly();
-    let (cmd, t, dist) = path.nearest_segment(at, &m).ok_or_else(|| EngineError::State("the path has no segments".into()))?;
-    if dist > slop {
-        return Err(EngineError::State("no segment there".into()));
-    }
-    if path.cmds.len() >= MAX_CMDS || !path.split_segment(cmd, t) {
-        return Err(EngineError::State("cannot add a point there".into()));
-    }
-    Ok(json!({"cmd": cmd}))
+    edit_shape(s, p, |sh, m| {
+        let path = Arc::make_mut(&mut sh.path);
+        path.close_explicitly();
+        let (cmd, t, dist) = path.nearest_segment(at, &m).ok_or_else(|| EngineError::State("the path has no segments".into()))?;
+        if dist > slop {
+            return Err(EngineError::State("no segment there".into()));
+        }
+        if path.cmds.len() >= MAX_CMDS || !path.split_segment(cmd, t) {
+            return Err(EngineError::State("cannot add a point there".into()));
+        }
+        Ok(json!({"cmd": cmd}))
+    })
 }
 
 fn delete_points(s: &mut Session, p: &Value) -> Result<Value> {
     let cmds = index_list(p, "cmds")?;
-    let (sh, _) = shape_mut(s, p)?;
-    let path = Arc::make_mut(&mut sh.path);
-    // Highest first, so earlier indices stay valid; twins collapse onto one anchor.
-    let order: BTreeSet<usize> = cmds.iter().map(|&c| path.canonical_anchor(c)).collect();
-    let mut removed = 0;
-    for cmd in order.into_iter().rev() {
-        if path.remove_anchor(cmd) {
-            removed += 1;
+    edit_shape(s, p, |sh, _| {
+        let path = Arc::make_mut(&mut sh.path);
+        // Highest first, so earlier indices stay valid; twins collapse onto one anchor.
+        let order: BTreeSet<usize> = cmds.iter().map(|&c| path.canonical_anchor(c)).collect();
+        let mut removed = 0;
+        for cmd in order.into_iter().rev() {
+            if path.remove_anchor(cmd) {
+                removed += 1;
+            }
         }
-    }
-    if removed == 0 {
-        return Err(EngineError::State("a path keeps at least two points (delete the shape instead)".into()));
-    }
-    Ok(json!({"deleted": removed}))
+        if removed == 0 {
+            return Err(EngineError::State("a path keeps at least two points (delete the shape instead)".into()));
+        }
+        Ok(json!({"deleted": removed}))
+    })
 }
 
 fn convert_point(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = opt_u64(p, "cmd")?.ok_or_else(|| EngineError::Param("param 'cmd' is required".into()))?;
     let cmd = usize::try_from(cmd).unwrap_or(usize::MAX);
     let smooth = opt_bool(p, "smooth")?.ok_or_else(|| EngineError::Param("param 'smooth' is required".into()))?;
-    let (sh, _) = shape_mut(s, p)?;
-    let path = Arc::make_mut(&mut sh.path);
-    if path.point(cmd, ANCHOR).is_none() {
-        return Err(EngineError::Param(format!("no anchor {cmd} on this path")));
-    }
-    let changed = if smooth { path.make_smooth(cmd) } else { path.make_corner(cmd) };
-    Ok(json!({"changed": changed}))
+    edit_shape(s, p, |sh, _| {
+        let path = Arc::make_mut(&mut sh.path);
+        if path.point(cmd, ANCHOR).is_none() {
+            return Err(EngineError::Param(format!("no anchor {cmd} on this path")));
+        }
+        let changed = if smooth { path.make_smooth(cmd) } else { path.make_corner(cmd) };
+        Ok(json!({"changed": changed}))
+    })
 }

@@ -85,11 +85,22 @@ fn erase(s: &mut Session, p: &Value) -> Result<Value> {
 
 /// Erases `eraser` (keyframe space) from the active layer's raw shapes, as `mode` says.
 pub(crate) fn erase_with(s: &mut Session, eraser: &Path, mode: EraseMode, start: Vec2) -> Result<Value> {
-    let nothing = |why: &str| Ok(json!({"erased": false, "mode": mode.key(), "elements": [], "reason": why}));
     // Nothing may change when nothing is erased (no keyframe made, no undo step).
     let before = s.doc.clone();
     let els = s.editable_keyframe()?.elements.clone();
     let area = eraser.bounds().inflate(2.0 * SNAP);
+    // What the eraser passes over and keeps (ADR 0093): symbols, and drawing objects, groups and
+    // text. Each opens for editing in place, where its raw shapes erase.
+    let kept = kept_under(s, &els, eraser);
+    let nothing = |why: &str| {
+        let why = match kept {
+            (0, 0) => why.to_string(),
+            (_, 0) => "the eraser keeps symbols on the stage; double-click one with the Selection tool (or select it and use Edit Symbols) to erase inside it".to_string(),
+            (0, _) => "the eraser keeps drawing objects; double-click one with the Selection tool to erase inside it".to_string(),
+            _ => "the eraser keeps symbols and drawing objects; double-click one with the Selection tool to erase inside it".to_string(),
+        };
+        Ok(json!({"erased": false, "mode": mode.key(), "elements": [], "reason": why, "kept": {"symbols": kept.0, "objects": kept.1}}))
+    };
     let touching: Vec<usize> = (0..els.len()).filter(|&i| els.get(i).and_then(|e| mergeable(e).map(|sh| !reach(sh, &e.transform).intersect(&area).is_empty())).unwrap_or(false)).collect();
     let el = |i: &usize| els.get(*i).map(|e| e.as_ref());
     let is_fill = |i: &usize| el(i).and_then(mergeable).is_some_and(|sh| sh.fill.is_some());
@@ -142,7 +153,32 @@ pub(crate) fn erase_with(s: &mut Session, eraser: &Path, mode: EraseMode, start:
     // What stays selected: the rest of the selection, and what is left of selected shapes.
     s.selection.retain(|l, id| l != here || !gone.contains(&id));
     s.selection.extend_on(here, picked);
-    Ok(json!({"erased": true, "mode": mode.key(), "elements": ids, "area_erased": (was.0 - now.0).max(0.0), "length_erased": (was.1 - now.1).max(0.0)}))
+    Ok(json!({"erased": true, "mode": mode.key(), "elements": ids, "area_erased": (was.0 - now.0).max(0.0), "length_erased": (was.1 - now.1).max(0.0), "kept": {"symbols": kept.0, "objects": kept.1}}))
+}
+
+/// How many symbol instances, and how many other elements that are not raw shapes (drawing
+/// objects, groups, text), the eraser's outline reaches on the keyframe: what it keeps.
+fn kept_under(s: &Session, els: &[std::sync::Arc<Element>], eraser: &Path) -> (usize, usize) {
+    let area = eraser.bounds();
+    let (mut symbols, mut objects) = (0, 0);
+    for e in els.iter().take(100_000) {
+        if mergeable(e).is_some() || matches!(e.kind, ElementKind::Camera) {
+            continue;
+        }
+        let b = match &e.kind {
+            ElementKind::Shape(sh) => reach(sh, &e.transform),
+            _ => s.element_bounds(e.id),
+        };
+        if b.intersect(&area).is_empty() {
+            continue;
+        }
+        if matches!(e.kind, ElementKind::Symbol { .. }) {
+            symbols += 1;
+        } else {
+            objects += 1;
+        }
+    }
+    (symbols, objects)
 }
 
 /// Total fill area and stroke length of raw shapes, in keyframe space. Fill areas are exact
@@ -247,7 +283,7 @@ fn faucet(s: &mut Session, p: &Value) -> Result<Value> {
             let near = sh.path.bounds().transformed(&e.transform).inflate(hw + slop).contains(at);
             near && ((sh.fill.is_some() && sh.path.contains(at, &e.transform, sh.fill_rule)) || (sh.stroke.is_some() && sh.path.distance_to_edge(at, &e.transform) <= hw + slop))
         }
-        ElementKind::Symbol { .. } | ElementKind::Text(_) => s.element_bounds(e.id).contains(at),
+        ElementKind::Symbol { .. } | ElementKind::Text(_) | ElementKind::Group { .. } => s.element_bounds(e.id).contains(at),
         ElementKind::Camera => false,
     });
     let Some(hit) = hit else {
@@ -283,7 +319,7 @@ fn erase_all(s: &mut Session, _: &Value) -> Result<Value> {
     let (scene, frame) = (s.scene, s.frame);
     let mut erased = 0;
     for (id, _) in &layers {
-        let Some(layer) = crate::editing::edited_mut(&mut s.doc, scene, &s.editing).layer_mut(*id) else { continue };
+        let Some(layer) = crate::editing::edited_mut(&mut s.doc, scene, &s.editing).ok().and_then(|tl| tl.layer_mut(*id)) else { continue };
         let Some(i) = layer.keyframe_index_at(frame) else { continue };
         let Some(kf) = layer.keyframe_mut(i) else { continue };
         erased += kf.elements.len();

@@ -2,8 +2,10 @@
 //! can show, never panics, and rejects non-finite numbers.
 
 use crate::{EngineError, Result};
-use anicraft_doc::{Easing, ProfilePreset, Rgba, WidthPoint, WidthProfile};
-use serde_json::Value;
+use anicraft_doc::{CustomEase, Document, EasePoint, Easing, ProfilePreset, Rgba, SampledEase, WidthPoint, WidthProfile};
+use anicraft_geom::Vec2;
+use std::sync::Arc;
+use serde_json::{Value, json};
 
 fn bad(key: &str, want: &str) -> EngineError {
     EngineError::Param(format!("param '{key}' must be {want}"))
@@ -81,25 +83,17 @@ pub fn opt_u64_list(p: &Value, key: &str) -> Result<Option<Vec<u64>>> {
     }
 }
 
-/// Easing from a preset name (`"Linear"`, `"QuadIn"`…), `{"classic": n}` or `{"bezier": [x1,y1,x2,y2]}`.
+/// Easing from a preset name (`"Linear"`, `"QuadIn"`, `"ElasticOut"`…), `{"classic": n}`,
+/// `{"bezier": [x1, y1, x2, y2]}` or `{"custom": …}` (a custom ease: `{"points": [{at, in,
+/// out, smooth}, ..]}` as `ease.info` gives it, or the flat list `[[x, y], ..]` of 3n + 1
+/// points XFL uses). Saved eases (`{"saved": name}`) need the document: [`opt_easing_in`].
 pub fn opt_easing(p: &Value, key: &str) -> Result<Option<Easing>> {
     let Some(v) = p.get(key) else { return Ok(None) };
     if v.is_null() {
         return Ok(None);
     }
     if let Some(s) = v.as_str() {
-        let e = match s.to_ascii_lowercase().replace(['-', '_', ' '], "").as_str() {
-            "linear" | "none" => Easing::Linear,
-            "quadin" | "easein" => Easing::QuadIn,
-            "quadout" | "easeout" => Easing::QuadOut,
-            "quadinout" | "easeinout" => Easing::QuadInOut,
-            "cubicin" => Easing::CubicIn,
-            "cubicout" => Easing::CubicOut,
-            "cubicinout" => Easing::CubicInOut,
-            "smooth" => Easing::CubicBezier(0.25, 0.1, 0.25, 1.0),
-            _ => return Err(bad(key, "one of Linear, QuadIn, QuadOut, QuadInOut, CubicIn, CubicOut, CubicInOut, Smooth")),
-        };
-        return Ok(Some(e));
+        return Easing::from_name(s).map(Some).ok_or_else(|| bad(key, "a preset name: Linear, Smooth, or a family (Quad, Cubic, Quart, Quint, Sine, Back, Circ, Bounce, Elastic) with In, Out or InOut, e.g. BackOut"));
     }
     if let Some(c) = v.get("classic") {
         let s = c.as_f64().filter(|f| f.is_finite()).ok_or_else(|| bad(key, "{\"classic\": -100..100}"))?;
@@ -111,7 +105,99 @@ pub fn opt_easing(p: &Value, key: &str) -> Result<Option<Easing>> {
             return Ok(Some(Easing::CubicBezier(x1.clamp(0.0, 1.0), y1.clamp(-5.0, 5.0), x2.clamp(0.0, 1.0), y2.clamp(-5.0, 5.0))));
         }
     }
-    Err(bad(key, "an easing name, {\"classic\": n} or {\"bezier\": [x1, y1, x2, y2]}"))
+    if let Some(c) = v.get("custom") {
+        return custom_ease(c).map(|c| Some(Easing::Custom(Arc::new(c)))).ok_or_else(|| bad(key, "{\"custom\": {\"points\": [{\"at\": {\"x\", \"y\"}, \"in\": {..}, \"out\": {..}, \"smooth\"}, ..]}} or {\"custom\": [[x, y], ..]} (3n + 1 points)"));
+    }
+    if let Some(t) = v.get("sampled") {
+        return sampled_ease(t).map(|t| Some(Easing::Sampled(Arc::new(t)))).ok_or_else(|| bad(key, "{\"sampled\": {\"name\", \"plugin\", \"ease\", \"values\": [0, …, 1]}} (as ease.info gives a plug-in's ease)"));
+    }
+    Err(bad(key, "an easing name, {\"classic\": n}, {\"bezier\": [x1, y1, x2, y2]}, {\"custom\": …}, {\"saved\": name} or {\"plugin\": id, \"ease\": id}"))
+}
+
+/// Most values read from a sampled ease param before it is thinned to the cap.
+const MAX_SAMPLED_PARAM: usize = 65_536;
+
+fn sampled_ease(v: &Value) -> Option<SampledEase> {
+    let o = v.as_object()?;
+    let values = o.get("values")?.as_array()?;
+    if values.len() > MAX_SAMPLED_PARAM {
+        return None;
+    }
+    let values: Option<Vec<f32>> = values.iter().map(|x| x.as_f64().map(|f| f as f32)).collect();
+    let s = |k: &str| o.get(k).and_then(Value::as_str).unwrap_or("");
+    Some(SampledEase::new(s("name"), s("plugin"), s("ease"), values?))
+}
+
+/// Most points read from a custom ease param before it is thinned to the cap.
+const MAX_EASE_PARAM: usize = 16_384;
+
+fn custom_ease(v: &Value) -> Option<CustomEase> {
+    match v {
+        Value::Array(flat) if flat.len() <= MAX_EASE_PARAM * 3 => {
+            let pts: Option<Vec<Vec2>> = flat.iter().map(|q| match q.as_array().map(Vec::as_slice) {
+                Some([x, y]) => Some(Vec2::new(x.as_f64()? as f32, y.as_f64()? as f32)),
+                _ => None,
+            }).collect();
+            CustomEase::from_flat(&pts?)
+        }
+        Value::Object(o) => {
+            let pts = o.get("points")?.as_array()?;
+            if pts.len() > MAX_EASE_PARAM {
+                return None;
+            }
+            serde_json::from_value::<Vec<EasePoint>>(Value::Array(pts.clone())).ok().map(CustomEase::new)
+        }
+        _ => None,
+    }
+}
+
+/// [`opt_easing`], `{"saved": name}` for an ease saved in the document (ADR 0081), and
+/// `{"plugin": id, "ease": id}` for an installed ease plug-in's (ADR 0088; the tween keeps
+/// its sampled curve).
+pub fn opt_easing_in(s: &crate::Session, p: &Value, key: &str) -> Result<Option<Easing>> {
+    if let Some(name) = p.get(key).and_then(|v| v.get("saved")) {
+        let name = name.as_str().ok_or_else(|| bad(key, "{\"saved\": name}"))?;
+        return saved_ease(&s.doc, name).map(Some);
+    }
+    if let Some(v) = p.get(key).filter(|v| v.get("plugin").is_some()) {
+        let (Some(plugin), Some(ease)) = (v.get("plugin").and_then(Value::as_str), v.get("ease").and_then(Value::as_str)) else {
+            return Err(bad(key, "{\"plugin\": an ease plug-in's id, \"ease\": one of its eases (see ease.list)}"));
+        };
+        return plugin_ease(s, plugin, ease).map(Some);
+    }
+    opt_easing(p, key)
+}
+
+/// Ease `ease` (its id, or its name in any case) of the installed ease plug-in `plugin`, as the
+/// sampled curve a tween keeps.
+pub fn plugin_ease(s: &crate::Session, plugin: &str, ease: &str) -> Result<Easing> {
+    let p = s.plugins.get(plugin).filter(|p| p.manifest().kind == anicraft_plugins::Kind::Ease).ok_or_else(|| EngineError::State(format!("no ease plug-in “{plugin}” is installed (see ease.list)")))?;
+    let want = ease.trim().to_lowercase();
+    let c = p.eases().iter().find(|c| c.id == ease || c.name.to_lowercase() == want).ok_or_else(|| {
+        let ids: Vec<&str> = p.eases().iter().map(|c| c.id.as_str()).collect();
+        EngineError::State(format!("{} has no ease '{ease}' (it has {})", p.manifest().name, ids.join(", ")))
+    })?;
+    Ok(Easing::Sampled(Arc::new(SampledEase::new(&c.name, p.id(), &c.id, c.values.clone()))))
+}
+
+/// The ease saved as `name` (any case).
+pub fn saved_ease(doc: &Document, name: &str) -> Result<Easing> {
+    let want = name.trim().to_lowercase();
+    doc.eases.iter().find(|e| e.name.to_lowercase() == want).map(|e| e.ease.clone()).ok_or_else(|| {
+        let names: Vec<&str> = doc.eases.iter().map(|e| e.name.as_str()).take(20).collect();
+        EngineError::State(if names.is_empty() { format!("no ease is saved as '{name}' (save one with ease.save)") } else { format!("no ease is saved as '{name}' (saved: {})", names.join(", ")) })
+    })
+}
+
+/// An ease as commands take it back (see [`opt_easing`]): a name for presets, else its values.
+pub fn easing_json(e: &Easing) -> Value {
+    match e {
+        Easing::Classic(s) => json!({"classic": s}),
+        Easing::CubicBezier(a, b, c, d) => json!({"bezier": [a, b, c, d]}),
+        Easing::Custom(c) => json!({"custom": serde_json::to_value(&**c).unwrap_or(Value::Null)}),
+        Easing::Sampled(t) => json!({"sampled": serde_json::to_value(&**t).unwrap_or(Value::Null)}),
+        named => named.name().map_or(Value::Null, Value::from),
+    }
 }
 
 /// A width profile (ADR 0018): a preset name (`"uniform"`, `"taper_both"`, `"taper_start"`,

@@ -48,8 +48,11 @@ fn plugin(app: &App, id: &str) -> Option<Arc<Plugin>> {
 
 /// Why `p` can't run now (it works on the selection and nothing is selected).
 fn blocked(s: &Session, p: &Plugin) -> Option<&'static str> {
-    if p.manifest().kind == anicraft_engine::plugins::Kind::FrameScript {
-        return Some(tr!("A frame script: it runs while the movie plays. Pick it for a keyframe in the Actions panel (F9)"));
+    match p.manifest().kind {
+        anicraft_engine::plugins::Kind::FrameScript => return Some(tr!("A frame script: it runs while the movie plays. Pick it for a keyframe in the Actions panel (F9)")),
+        anicraft_engine::plugins::Kind::Exporter => return Some(tr!("An export format: find it in File › Export")),
+        anicraft_engine::plugins::Kind::Ease => return Some(tr!("Eases: pick them in a tween's ease menu")),
+        anicraft_engine::plugins::Kind::Command => {}
     }
     (p.manifest().selection == SelectionNeed::Required && s.selection.is_empty()).then(|| tr!("Select some artwork first"))
 }
@@ -148,7 +151,7 @@ fn hex_rgb(s: &str) -> [u8; 3] {
 
 /// One parameter's control; true when the value changed.
 /// Named for screen readers with the parameter's label.
-fn control(ui: &mut egui::Ui, name: &str, kind: &ParamKind, v: &mut Value) -> bool {
+pub(crate) fn control(ui: &mut egui::Ui, name: &str, kind: &ParamKind, v: &mut Value) -> bool {
     match kind {
         ParamKind::Number { min, max, .. } => {
             let mut f = v.as_f64().unwrap_or(*min);
@@ -183,7 +186,7 @@ fn control(ui: &mut egui::Ui, name: &str, kind: &ParamKind, v: &mut Value) -> bo
         }
         ParamKind::Color { .. } => {
             let mut c = hex_rgb(v.as_str().unwrap_or("#000000"));
-            let changed = ui.color_edit_button_srgb(&mut c).named(name).changed();
+            let changed = crate::colour::button(ui, &mut c).named(name).changed();
             let h = format!("#{:02x}{:02x}{:02x}", c[0], c[1], c[2]);
             ui.label(text(Type::Data, h.clone()));
             *v = json!(h);
@@ -286,7 +289,7 @@ fn manager(app: &mut App, ctx: &egui::Context) {
     let shown = egui::Window::new(title).id(egui::Id::new("plugins_window")).open(&mut open).collapsible(false).resizable(false).default_width(560.0).show(ctx, |ui| {
         let list: Vec<Arc<Plugin>> = app.s.plugins.list().cloned().collect();
         if list.is_empty() {
-            ui.label(text(Type::Label, tr!("No plug-ins installed yet. Plug-ins are WebAssembly (.wasm) files that add commands, such as generators and selection effects.")));
+            ui.label(text(Type::Label, tr!("No plug-ins installed yet. Plug-ins are WebAssembly (.wasm) files that add commands (generators, selection effects), export formats and eases.")));
         }
         for p in &list {
             let m = p.manifest();
@@ -299,12 +302,24 @@ fn manager(app: &mut App, ctx: &egui::Context) {
                     if ui.button(tr!("Remove…")).clicked() {
                         action = Some(("plugin.remove", p.id().to_string()));
                     }
-                    let why = blocked(&app.s, p);
-                    let r = ui.add_enabled(why.is_none(), egui::Button::new(if m.params.is_empty() { tr!("Run") } else { tr!("Run…") }));
-                    if let Some(w) = why {
-                        r.on_disabled_hover_text(w);
-                    } else if r.clicked() {
-                        action = Some(("plugin.run", p.id().to_string()));
+                    match m.kind {
+                        anicraft_engine::plugins::Kind::Exporter => {
+                            if ui.button(tr!("Export…")).on_hover_text(tr!("Export the movie in this format")).clicked() {
+                                action = Some(("export", p.id().to_string()));
+                            }
+                        }
+                        anicraft_engine::plugins::Kind::Ease => {
+                            ui.label(text(Type::Caption, trn!("{n} ease, in the ease menus", "{n} eases, in the ease menus", p.eases().len())));
+                        }
+                        _ => {
+                            let why = blocked(&app.s, p);
+                            let r = ui.add_enabled(why.is_none(), egui::Button::new(if m.params.is_empty() { tr!("Run") } else { tr!("Run…") }));
+                            if let Some(w) = why {
+                                r.on_disabled_hover_text(w);
+                            } else if r.clicked() {
+                                action = Some(("plugin.run", p.id().to_string()));
+                            }
+                        }
                     }
                 });
             });
@@ -339,12 +354,13 @@ fn manager(app: &mut App, ctx: &egui::Context) {
                 action = Some(("show", f.display().to_string()));
             }
         });
-        ui.label(text(Type::Caption, tr!("Plug-ins run sandboxed: they can change the open document through AniCraft's commands, never your files.")));
+        ui.label(text(Type::Caption, tr!("Plug-ins run sandboxed: they can change the open document through AniCraft's commands, never your files. An export format only reads the frames; AniCraft writes its file.")));
     });
     a11y::name_title_bar(&shown, title);
     app.show_plugins = open;
     match action {
         Some(("plugin.run", id)) => run_or_ask(app, &id),
+        Some(("export", id)) => crate::plugin_export_ui::open(app, &id),
         Some(("plugin.remove", id)) => app.request("plugin.remove", json!({"id": id})),
         Some(("plugin.install", _)) => app.invoke("plugin.install"),
         Some(("plugin.reload", _)) => app.invoke("plugin.reload"),

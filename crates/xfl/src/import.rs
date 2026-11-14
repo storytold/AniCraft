@@ -5,25 +5,29 @@
 //! and keyframes with durations, labels and classic tweens with their ease; shapes (solid,
 //! linear and radial fills, solid, dashed and dotted strokes with their caps, joints and
 //! miter limit), groups (flattened), rectangle and oval
-//! primitives; symbol instances with their matrix, alpha and tint, loop mode and first frame;
+//! primitives; symbol instances with their matrix, colour effect (every style, ADR 0056), loop mode and first frame;
 //! library symbols (graphic, movie clip, button) with their own timelines, nested to any
 //! depth; bitmaps (library items, instances and bitmap fills) whose image is stored as PNG or
 //! JPEG in the package; text fields, laid out with this computer's fonts (`text`, ADR 0014);
 //! frame scripts, symbol linkage classes and the document class, kept verbatim (ADR 0013 tier
 //! 1); frame scripts in the ActionScript 3.0 subset run in Test Movie (tier 2), and the report
-//! lists which run and which are only kept.
-//! Everything else (sound, motion tweens with property curves, unknown filters,
-//! bitmaps kept only in Animate's own storage) is counted in the report instead of guessed at,
+//! lists which run and which are only kept; sounds whose file is in the package as WAV, Ogg
+//! Vorbis or MP3, and the sounds on frames that use them, buttons' states included, with their
+//! sync, repeats and effect or envelope (ADR 0057, ADR 0086); Screen Video videos as a still of
+//! their first frame (`video`, ADR 0086). Sounds and videos that don't come across are named in
+//! the report with why. Everything else (bitmaps kept only in Animate's own storage, video playback,
+//! motion tweens with property curves, unknown filters) is counted in the report instead of guessed at,
 //! and so is whatever is drawn the nearest way AniCraft can (ragged, stipple and hatched
-//! strokes, reflecting gradients, advanced colour effects, …). The self-authored corpus in `tests/corpus/` covers
+//! strokes, reflecting gradients, …). The self-authored corpus in `tests/corpus/` covers
 //! every feature listed here, with golden renders (ADR 0035).
 
 use crate::edges::{self, Edge};
 use crate::xml::{self, Element as X};
 use anicraft_doc::{
-    Cap, Dash, Join, StrokeStyle, Bitmap, BitmapId, BlendMode, ColorEffect, Filter, FilterSide, Document, Easing, Element, ElementId, ElementKind, GradientStop, Keyframe, Layer, LayerId, LayerKind, LoopMode, Paint, Rgba, Shape, Stage, Stroke, Symbol, SymbolId,
-    Scene, ShapeHint, SymbolKind, Timeline, Tween, TweenKind, FrameScript, Language, Linkage, SourceScript,
+    Cap, Dash, Join, StrokeStyle, Bitmap, BitmapId, BlendMode, ColorEffect, ColorTransform, Filter, FilterEntry, FilterSide, Document, Easing, Element, ElementId, ElementKind, GradientStop, Keyframe, Layer, LayerId, LayerKind, LoopMode, Paint, Rgba, Shape, Stage, Stroke, Symbol, SymbolId,
+    Scene, ShapeHint, SymbolKind, Timeline, Tween, TweenKind, CustomEase, EaseGroup, FrameScript, FrameSound, Language, Linkage, ScaleGrid, SoundSync, SourceScript, Spread, MAX_FOCAL,
 };
+use anicraft_doc::sound::{EnvelopePoint, SoundEffect, clean_points};
 use anicraft_geom::{Affine, FillRule, Path, Vec2};
 use anicraft_text::{FaceMatch, Fonts};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
@@ -65,11 +69,28 @@ pub struct Report {
     pub missing_fonts: BTreeSet<String>,
     /// The family that text was laid out in instead.
     pub fallback_font: Option<String>,
+    /// The items behind some kinds of `skipped`, by name ("intro.flv, On2 VP6, 4.0 s"), so an
+    /// artist can tell which sound or video didn't come across (ADR 0086). At most
+    /// [`MAX_NAMED`] per kind; the count in `skipped` is always whole.
+    pub names: BTreeMap<String, Vec<String>>,
 }
+
+/// Most names kept per kind of skipped item.
+pub const MAX_NAMED: usize = 64;
+/// Most names the summary line shows per kind.
+const SHOWN_NAMES: usize = 3;
 
 impl Report {
     pub(crate) fn skip(&mut self, what: &str) {
         *self.skipped.entry(what.to_string()).or_default() += 1;
+    }
+    /// Counts `what` and keeps the item's `name` for the report.
+    pub(crate) fn skip_named(&mut self, what: &str, name: String) {
+        self.skip(what);
+        let names = self.names.entry(what.to_string()).or_default();
+        if names.len() < MAX_NAMED {
+            names.push(name);
+        }
     }
     pub(crate) fn keep(&mut self, what: &str) {
         *self.kept.entry(what.to_string()).or_default() += 1;
@@ -93,7 +114,20 @@ impl Report {
             return format!("Imported everything in the file.{kept}");
         }
         let mut out = format!("Imported.{kept}");
-        let mut parts: Vec<String> = self.skipped.iter().map(|(k, n)| format!("{n} {k}")).collect();
+        let mut parts: Vec<String> = self
+            .skipped
+            .iter()
+            .map(|(k, n)| match self.names.get(k).filter(|v| !v.is_empty()) {
+                Some(names) => {
+                    let mut shown: Vec<&str> = names.iter().take(SHOWN_NAMES).map(String::as_str).collect();
+                    let more = n.saturating_sub(shown.len());
+                    let more = if more > 0 { format!(" and {more} more") } else { String::new() };
+                    shown.truncate(SHOWN_NAMES);
+                    format!("{n} {k} ({}{more})", shown.join("; "))
+                }
+                None => format!("{n} {k}"),
+            })
+            .collect();
         parts.extend(self.notes.iter().cloned());
         if !parts.is_empty() {
             out.push_str(&format!(" Not yet supported: {}.", parts.join(", ")));
@@ -114,6 +148,71 @@ const MAX_SYMBOLS: usize = 20_000;
 const MAX_LAYERS: usize = 5_000;
 const MAX_FRAME: u32 = 100_000;
 const MAX_BITMAPS: usize = 10_000;
+const MAX_SOUNDS: usize = 10_000;
+const MAX_VIDEOS: usize = 10_000;
+
+/// Names the format of sound data that didn't decode, and why when it is a kind AniCraft reads:
+/// "AIFF", "WAV in IMA ADPCM", "Animate's own sound data".
+fn sound_format(data: &[u8], from_bin: bool, err: &anicraft_doc::audio::AudioError) -> String {
+    use anicraft_doc::audio::{AudioError, Format};
+    if data.starts_with(b"OggS") && data.windows(8).any(|w| w == b"OpusHead") {
+        return "Ogg Opus".into();
+    }
+    if let Some(f) = Format::sniff(data) {
+        let kind = match f {
+            Format::Wav => "WAV",
+            Format::Vorbis => "Ogg",
+            Format::Mp3 => "MP3",
+        };
+        return match err {
+            AudioError::Unsupported(_) if let Some(codec) = wav_codec(data).filter(|c| !matches!(c, 1 | 3 | 0xFFFE)) => {
+                let name = match codec {
+                    0x0002 => "Microsoft ADPCM".to_string(),
+                    0x0006 => "A-law".to_string(),
+                    0x0007 => "µ-law".to_string(),
+                    0x0011 => "IMA ADPCM".to_string(),
+                    0x0031 => "GSM 6.10".to_string(),
+                    0x0055 => "MP3".to_string(),
+                    c => format!("codec 0x{c:04X}"),
+                };
+                format!("WAV in {name}")
+            }
+            AudioError::Unsupported(what) => format!("{kind} with {what}"),
+            AudioError::TooLong => format!("{kind} longer than AniCraft plays"),
+            AudioError::Empty => format!("{kind} holding no audio"),
+            _ => format!("a damaged {kind} file"),
+        };
+    }
+    let name = if data.starts_with(b"FORM") && matches!(data.get(8..12), Some(b"AIFF" | b"AIFC")) {
+        "AIFF"
+    } else if data.starts_with(b"fLaC") {
+        "FLAC"
+    } else if data.get(4..8) == Some(b"ftyp") {
+        "AAC or MPEG-4 audio"
+    } else if data.starts_with(b".snd") {
+        "Sun AU"
+    } else if from_bin {
+        "Animate's own sound data"
+    } else {
+        "an unknown format"
+    };
+    name.into()
+}
+
+/// The codec of a WAV file's `fmt ` chunk (1 PCM, 3 float, 0x11 IMA ADPCM, …), looked for in
+/// its first chunks.
+fn wav_codec(data: &[u8]) -> Option<u16> {
+    let mut at = 12usize;
+    for _ in 0..64 {
+        let id = data.get(at..at + 4)?;
+        let size = u32::from_le_bytes(data.get(at + 4..at + 8)?.try_into().ok()?) as usize;
+        if id == b"fmt " {
+            return Some(u16::from_le_bytes(data.get(at + 8..at + 10)?.try_into().ok()?));
+        }
+        at = at.checked_add(8)?.checked_add(size)?.checked_add(size & 1)?;
+    }
+    None
+}
 
 /// Bitmap fill matrices scale image pixels by twips (1/20 px): `a = 20` is one pixel per pixel.
 const TWIPS: f32 = 20.0;
@@ -130,6 +229,11 @@ struct Builder<'a> {
     language: Language,
     /// Library item name → bitmap id, for the bitmaps that could be read.
     bitmaps: HashMap<String, BitmapId>,
+    /// Library item name → sound id, for the sounds whose file is in the package (ADR 0057).
+    sounds: HashMap<String, anicraft_doc::SoundId>,
+    /// Library item name -> the still of its first frame, for every video item (`None` when the
+    /// video could not be read; ADR 0086).
+    videos: HashMap<String, Option<BitmapId>>,
     report: Report,
     /// The fonts text is laid out with; the computer's, found on the first text field.
     fonts: Option<&'a Fonts>,
@@ -184,31 +288,24 @@ fn paint(def: &X, bitmaps: &HashMap<String, BitmapId>, report: &mut Report) -> O
             if stops.is_empty() {
                 return None;
             }
-            // What AniCraft's gradients can't draw yet is drawn the nearest way, and said.
-            if def.attr("spreadMethod").is_some_and(|s| s.trim() != "pad") {
-                report.skip("repeating and reflecting gradients (drawn padded)");
-            }
-            if def.attr("interpolationMethod").is_some_and(|s| s.trim() == "linearRGB") {
-                report.skip("linear-RGB gradients (blended in sRGB)");
-            }
-            if def.name == "RadialGradient" {
-                if def.f32("focalPointRatio").is_some_and(|f| f != 0.0) {
-                    report.skip("radial gradient focal points (drawn centred)");
+            // Overflow, interpolation and the focal point carry over as they are (ADR 0074).
+            let spread = def.attr("spreadMethod").and_then(|s| Spread::from_key(s.trim())).unwrap_or_default();
+            let linear_rgb = def.attr("interpolationMethod").is_some_and(|s| s.trim() == "linearRGB");
+            let frame = m.mul(&Affine::scale(GRADIENT_HALF, GRADIENT_HALF));
+            let mut p = if def.name == "LinearGradient" { Paint::linear(Vec2::new(-1.0, 0.0), Vec2::new(1.0, 0.0), stops) } else { Paint::radial(Vec2::ZERO, 1.0, stops) };
+            match &mut p {
+                Paint::Linear { spread: s, linear_rgb: l, .. } => {
+                    *s = spread;
+                    *l = linear_rgb;
                 }
-                let (x, y) = (m.apply_vector(Vec2::new(1.0, 0.0)), m.apply_vector(Vec2::new(0.0, 1.0)));
-                let (lx, ly) = (x.length(), y.length());
-                // Columns of different lengths, or not at right angles: an ellipse.
-                if (lx - ly).abs() > 0.01 * lx.max(ly) || x.dot(y).abs() > 0.01 * lx * ly {
-                    report.skip("elliptical radial gradients (drawn round)");
+                Paint::Radial { spread: s, linear_rgb: l, focal, .. } => {
+                    *s = spread;
+                    *l = linear_rgb;
+                    *focal = def.f32("focalPointRatio").filter(|f| f.is_finite()).unwrap_or(0.0).clamp(-MAX_FOCAL, MAX_FOCAL);
                 }
+                _ => {}
             }
-            Some(if def.name == "LinearGradient" {
-                Paint::Linear { start: m.apply(Vec2::new(-GRADIENT_HALF, 0.0)), end: m.apply(Vec2::new(GRADIENT_HALF, 0.0)), stops }
-            } else {
-                let c = m.apply(Vec2::ZERO);
-                let r = (m.apply_vector(Vec2::new(GRADIENT_HALF, 0.0)).length() + m.apply_vector(Vec2::new(0.0, GRADIENT_HALF)).length()) * 0.5;
-                Paint::Radial { center: c, radius: r, stops }
-            })
+            Some(p.with_frame(&frame, None))
         }
         "BitmapFill" => {
             let Some(&bitmap) = def.attr("bitmapPath").and_then(|n| bitmaps.get(n)) else {
@@ -291,14 +388,14 @@ impl<'a> Builder<'a> {
             let (Some(p), true) = (p, index > 0) else { continue };
             let path = edges::fill_path(&edges, index);
             if !path.is_empty() {
-                out.push(self.element(ElementKind::Shape(Shape { path: Arc::new(path), fill: Some(p), stroke: None, fill_rule: FillRule::EvenOdd, merge }), m, ColorEffect::default()));
+                out.push(self.element(ElementKind::Shape(Shape { path: Arc::new(path), fill: Some(p), stroke: None, fill_rule: FillRule::EvenOdd, merge, warp: None }), m, ColorEffect::default()));
             }
         }
         for (index, s) in strokes {
             let (Some(s), true) = (s, index > 0) else { continue };
             let path = edges::stroke_path(&edges, index);
             if !path.is_empty() {
-                out.push(self.element(ElementKind::Shape(Shape { path: Arc::new(path), fill: None, stroke: Some(s), fill_rule: FillRule::NonZero, merge }), m, ColorEffect::default()));
+                out.push(self.element(ElementKind::Shape(Shape { path: Arc::new(path), fill: None, stroke: Some(s), fill_rule: FillRule::NonZero, merge, warp: None }), m, ColorEffect::default()));
             }
         }
     }
@@ -315,7 +412,7 @@ impl<'a> Builder<'a> {
         let stroke = el.child("stroke").and_then(|s| s.children.first()).and_then(|d| stroke(d, &self.bitmaps, &mut self.report));
         if fill.is_some() || stroke.is_some() {
             let m = parent.mul(&matrix(el));
-            out.push(self.element(ElementKind::Shape(Shape { path: Arc::new(path), fill, stroke, fill_rule: FillRule::NonZero, merge: false }), m, ColorEffect::default()));
+            out.push(self.element(ElementKind::Shape(Shape { path: Arc::new(path), fill, stroke, fill_rule: FillRule::NonZero, merge: false, warp: None }), m, ColorEffect::default()));
         }
     }
 
@@ -326,18 +423,34 @@ impl<'a> Builder<'a> {
             self.report.skip("instances of missing bitmaps");
             return;
         };
-        let shape = Shape { path: Arc::new(Path::rect(0.0, 0.0, w, h)), fill: Some(Paint::Bitmap { bitmap, repeat: false, matrix: Affine::IDENTITY }), stroke: None, fill_rule: FillRule::NonZero, merge: false };
+        let shape = Shape { path: Arc::new(Path::rect(0.0, 0.0, w, h)), fill: Some(Paint::Bitmap { bitmap, repeat: false, matrix: Affine::IDENTITY }), stroke: None, fill_rule: FillRule::NonZero, merge: false, warp: None };
         out.push(self.element(ElementKind::Shape(shape), parent.mul(&matrix(el)), ColorEffect::default()));
     }
 
-    /// An instance's filters, by Animate's element names; switched-off filters are left out,
-    /// and unknown ones reported.
-    fn filters(&mut self, el: &X) -> Vec<Filter> {
+    /// A video instance (ADR 0086): its video's first frame, as a bitmap rectangle sized to the
+    /// instance's frame (`frameRight` and `frameBottom`, in twips) when the video came across
+    /// as a still; otherwise counted, the video itself being named in the report.
+    fn video_instance(&mut self, el: &X, parent: &Affine, out: &mut Vec<Arc<Element>>) {
+        let still = el.attr("libraryItemName").and_then(|n| self.videos.get(n)).copied();
+        let found = still.flatten().and_then(|id| self.doc.bitmap(id).map(|b| (id, b.width as f32, b.height as f32)));
+        let Some((bitmap, w, h)) = found else {
+            self.report.skip(if still.is_some() { "instances of videos AniCraft can't play" } else { "instances of missing videos" });
+            return;
+        };
+        let size = |k: &str, natural: f32| el.f32(k).map(|t| t / TWIPS).filter(|v| v.is_finite() && *v > 0.0 && *v <= 100_000.0).unwrap_or(natural);
+        let (fw, fh) = (size("frameRight", w), size("frameBottom", h));
+        let fit = Affine::scale(fw / w, fh / h);
+        let shape = Shape { path: Arc::new(Path::rect(0.0, 0.0, w, h)), fill: Some(Paint::Bitmap { bitmap, repeat: false, matrix: Affine::IDENTITY }), stroke: None, fill_rule: FillRule::NonZero, merge: false, warp: None };
+        out.push(self.element(ElementKind::Shape(shape), parent.mul(&matrix(el)).mul(&fit), ColorEffect::default()));
+    }
+
+    /// An instance's filters, by Animate's element names, in order; switched-off filters
+    /// (`enabled="false"`) come in switched off with their settings (ADR 0091), and unknown ones
+    /// are reported.
+    fn filters(&mut self, el: &X) -> Vec<FilterEntry> {
         let mut out = Vec::new();
         for f in el.list("filters") {
-            if f.bool("enabled") == Some(false) {
-                continue;
-            }
+            let enabled = f.bool("enabled") != Some(false);
             let num = |k: &str, d: f32| f.f32(k).unwrap_or(d);
             let flag = |k: &str| f.bool(k).unwrap_or(false);
             let quality = f.u32("quality").unwrap_or(1).clamp(1, 3) as u8;
@@ -384,7 +497,7 @@ impl<'a> Builder<'a> {
                     continue;
                 }
             };
-            out.push(filter.sanitized());
+            out.push(FilterEntry { filter: filter.sanitized(), enabled });
         }
         out
     }
@@ -400,7 +513,8 @@ impl<'a> Builder<'a> {
         let name: String = el.attr("name").unwrap_or("").chars().take(256).collect();
         for (i, p) in crate::text::field(el, fonts, &mut self.faces, &mut self.report).into_iter().enumerate() {
             let mut e = Element { id: ElementId(self.doc.alloc_id()), name: String::new(), transform: m.mul(&Affine::translate(p.offset.x, p.offset.y)), color: ColorEffect::default(), kind: ElementKind::Text(Arc::new(p.block)) };
-            // A dynamic or input field's instance name goes on its first block.
+            // A dynamic or input field's instance name goes on it (its first block for static
+            // text, which keeps the name for a later conversion).
             if i == 0 {
                 e.name.clone_from(&name);
             }
@@ -408,25 +522,34 @@ impl<'a> Builder<'a> {
         }
     }
 
-    /// An instance's `Color`: alpha, tint, or brightness (a tint towards white or black by that
-    /// amount, which is the same colour change). Other channel multipliers and offsets
-    /// (Animate's Advanced style) keep only their alpha, and are reported.
+    /// An instance's `Color` (ADR 0056): Animate's style comes from which attributes it has: a
+    /// tint (`tintMultiplier`, `tintColor`), a brightness (`brightness`, −1..1), Advanced (any
+    /// channel's multiplier other than 1 or an offset, −255..255), or alpha alone. Values are
+    /// clamped into Animate's ranges.
     fn color_effect(&mut self, c: &X) -> ColorEffect {
-        let mut fx = ColorEffect { alpha: c.f32("alphaMultiplier").unwrap_or(1.0).clamp(0.0, 1.0), ..ColorEffect::default() };
-        if let Some(t) = c.f32("tintMultiplier") {
-            fx.tint = color(c, "tintColor", "__none");
-            fx.tint_amount = t.clamp(0.0, 1.0);
+        let mul = |k: &str| c.f32(k).filter(|v| v.is_finite()).unwrap_or(1.0);
+        let off = |k: &str| c.f32(k).filter(|v| v.is_finite()).unwrap_or(0.0) / 255.0;
+        let alpha = mul("alphaMultiplier");
+        let fx = if let Some(t) = c.f32("tintMultiplier") {
+            let tint = ColorEffect::Tint { color: color(c, "tintColor", "__none").with_alpha(1.0), amount: t };
+            if alpha != 1.0 { tint.with_alpha(alpha) } else { tint }
         } else if let Some(b) = c.f32("brightness").filter(|b| *b != 0.0) {
-            fx.tint = if b > 0.0 { Rgba::WHITE } else { Rgba::BLACK };
-            fx.tint_amount = b.abs().min(1.0);
+            let bright = ColorEffect::Brightness(b);
+            if alpha != 1.0 { bright.with_alpha(alpha) } else { bright }
         } else {
-            let multiplied = ["redMultiplier", "greenMultiplier", "blueMultiplier"].iter().any(|k| c.f32(k).is_some_and(|v| v != 1.0));
-            let offset = ["redOffset", "greenOffset", "blueOffset", "alphaOffset"].iter().any(|k| c.f32(k).is_some_and(|v| v != 0.0));
-            if multiplied || offset {
-                self.report.skip("advanced colour effects (only alpha kept)");
+            let t = ColorTransform {
+                mul: [mul("redMultiplier"), mul("greenMultiplier"), mul("blueMultiplier"), alpha],
+                add: [off("redOffset"), off("greenOffset"), off("blueOffset"), off("alphaOffset")],
+            };
+            if t.changes_colour() || t.add[3] != 0.0 {
+                ColorEffect::Advanced(t)
+            } else if alpha != 1.0 {
+                ColorEffect::Alpha(alpha)
+            } else {
+                ColorEffect::None
             }
-        }
-        fx
+        };
+        fx.sanitized()
     }
 
     fn instance(&mut self, el: &X, parent: &Affine, out: &mut Vec<Arc<Element>>) {
@@ -472,16 +595,25 @@ impl<'a> Builder<'a> {
         }
         for el in list {
             match el.name.as_str() {
-                "DOMShape" => self.shape(el, parent, out, depth == 0),
-                "DOMGroup" => {
-                    let m = parent.mul(&matrix(el));
-                    self.elements(el.list("members"), &m, out, depth + 1);
+                // Shapes loose on a frame, or in a group, are raw shapes (a group's merge only with
+                // each other, ADR 0073); drawing objects say so.
+                "DOMShape" => self.shape(el, parent, out, true),
+                // A group (ADR 0073): its members in its own space, placed by its matrix.
+                "DOMGroup" if depth < anicraft_doc::MAX_GROUP_DEPTH => {
+                    let mut members = Vec::new();
+                    self.elements(el.list("members"), &Affine::IDENTITY, &mut members, depth + 1);
+                    if !members.is_empty() {
+                        let layer = LayerId(self.doc.alloc_id());
+                        let g = self.element(ElementKind::group(layer, members), parent.mul(&matrix(el)), ColorEffect::default());
+                        out.push(g);
+                    }
                 }
+                "DOMGroup" => self.report.skip("groups nested more than 32 deep"),
                 "DOMSymbolInstance" => self.instance(el, parent, out),
                 "DOMRectangleObject" | "DOMOvalObject" => self.primitive(el, parent, out),
                 "DOMBitmapInstance" => self.bitmap_instance(el, parent, out),
                 "DOMStaticText" | "DOMDynamicText" | "DOMInputText" => self.text_field(el, parent, out),
-                "DOMVideoInstance" => self.report.skip("videos"),
+                "DOMVideoInstance" => self.video_instance(el, parent, out),
                 _ => self.report.skip("other elements"),
             }
         }
@@ -518,6 +650,8 @@ impl<'a> Builder<'a> {
             layer.locked = l.bool("locked").unwrap_or(false);
             layer.outline = l.bool("outline").unwrap_or(false);
             layer.color = color(l, "color", "__none");
+            // Layer Properties' height, 100 / 200 / 300 % (ADR 0061), as a multiple of a row.
+            layer.height_rows = l.u32("heightMultiplier").map_or(1, |h| h.clamp(1, u32::from(anicraft_doc::MAX_LAYER_HEIGHT)) as u8);
             let mut keys = Vec::new();
             let mut raw_hints: HashMap<u32, Vec<RawHint>> = HashMap::new();
             for f in l.list("frames").iter().filter(|f| f.name == "DOMFrame") {
@@ -538,7 +672,8 @@ impl<'a> Builder<'a> {
                         if kind == TweenKind::Classic && f.attr("motionTweenRotate").is_some_and(|r| matches!(r.trim(), "clockwise" | "counter-clockwise")) {
                             self.report.skip("tween spins (turned the shortest way)");
                         }
-                        k.tween = Some(Tween { easing: self.easing(f), kind, orient });
+                        let (easing, groups) = self.easing(f);
+                        k.tween = Some(Tween { easing, kind, orient, groups });
                     }
                     Some("motion object") => self.report.skip("motion tweens (kept as keyframes)"),
                     _ => {}
@@ -550,6 +685,9 @@ impl<'a> Builder<'a> {
                 // Frame scripts are kept verbatim (ADR 0013 tier 1); those in the subset run.
                 if let Some(a) = f.child("Actionscript") {
                     k.script = self.frame_script(a);
+                }
+                if let Some(name) = f.attr("soundName").filter(|n| !n.trim().is_empty()) {
+                    k.sound = self.frame_sound(f, name);
                 }
                 let mut els = Vec::new();
                 self.elements(f.list("elements"), &Affine::IDENTITY, &mut els, 0);
@@ -593,26 +731,73 @@ impl<'a> Builder<'a> {
         Some(FrameScript::Source(Arc::new(script)))
     }
 
-    /// A tween's ease: the classic single-slider `acceleration`, or a custom ease curve. A
-    /// curve of one segment (four points from (0, 0) to (1, 1)) is a cubic Bézier exactly; a
-    /// longer one, or one per property, is drawn with the slider's ease and reported.
-    fn easing(&mut self, f: &X) -> Easing {
+    /// A tween's ease (ADR 0081): the classic single-slider `acceleration`, or its custom ease
+    /// curves exactly. A curve is `3n + 1` points (each segment's start, two handles, …, the
+    /// end) from (0, 0) to (1, 1); one segment is a cubic Bézier, more a custom ease. With
+    /// `useSingleEaseCurve="false"` each property group (`position`, `rotation`, `scale`,
+    /// `color`, `filters`) has its own curve, and `all` (or the slider) eases the rest.
+    fn easing(&mut self, f: &X) -> (Easing, Vec<(EaseGroup, Easing)>) {
         let acc = f.f32("acceleration").unwrap_or(0.0).clamp(-100.0, 100.0);
         let classic = if acc == 0.0 { Easing::Linear } else { Easing::Classic(acc) };
         if f.bool("hasCustomEase") != Some(true) {
-            return classic;
+            return (classic, Vec::new());
         }
         let curves: Vec<&X> = f.list("tweens").iter().filter(|c| c.name == "CustomEase").collect();
-        let one_curve = f.bool("useSingleEaseCurve") != Some(false) || curves.len() == 1;
-        let bezier = curves.first().filter(|_| one_curve).and_then(|c| {
-            let p: Vec<Vec2> = c.children.iter().filter(|p| p.name == "Point").take(5).map(|p| Vec2::new(p.f32("x").unwrap_or(0.0), p.f32("y").unwrap_or(0.0))).collect();
-            let [a, b, c, d] = p.as_slice() else { return None };
-            let near = |p: &Vec2, x: f32, y: f32| (p.x - x).abs() < 1e-3 && (p.y - y).abs() < 1e-3;
-            (near(a, 0.0, 0.0) && near(d, 1.0, 1.0)).then(|| Easing::CubicBezier(b.x.clamp(0.0, 1.0), b.y.clamp(-10.0, 10.0), c.x.clamp(0.0, 1.0), c.y.clamp(-10.0, 10.0)))
-        });
-        bezier.unwrap_or_else(|| {
-            self.report.skip("custom ease curves (drawn with the simple ease)");
-            classic
+        if curves.is_empty() {
+            self.report.skip("custom eases without their curve (drawn with the simple ease)");
+            return (classic, Vec::new());
+        }
+        let single = f.bool("useSingleEaseCurve") != Some(false) || curves.len() == 1;
+        let mut main = None;
+        let mut groups: Vec<(EaseGroup, Easing)> = Vec::new();
+        for (n, c) in curves.iter().enumerate() {
+            let target = c.attr("target").map_or("all", str::trim);
+            // One curve for everything: the first.
+            if single && n > 0 {
+                break;
+            }
+            let group = if single || target == "all" { None } else { EaseGroup::from_key(target) };
+            if group.is_none() && !single && target != "all" {
+                self.report.skip("custom eases of unknown properties (left out)");
+                continue;
+            }
+            let Some(e) = self.ease_curve(c) else { continue };
+            match group {
+                Some(g) if !groups.iter().any(|(x, _)| *x == g) => groups.push((g, e)),
+                None if main.is_none() => main = Some(e),
+                _ => {}
+            }
+        }
+        let mut t = Tween { easing: main.unwrap_or(classic), ..Tween::default() };
+        for (g, e) in groups {
+            t.set_ease(g, Some(e));
+        }
+        (t.easing, t.groups)
+    }
+
+    /// One `<CustomEase>` curve; `None` (reported) when its points don't make a curve.
+    fn ease_curve(&mut self, c: &X) -> Option<Easing> {
+        // Far more than a curve keeps (longer ones are thinned), and one more to tell.
+        const MAX_READ: usize = anicraft_doc::MAX_EASE_POINTS * 3 * 16 + 1;
+        let pts: Vec<Vec2> = c.children.iter().filter(|p| p.name == "Point").take(MAX_READ + 1).map(|p| Vec2::new(p.f32("x").unwrap_or(0.0), p.f32("y").unwrap_or(0.0))).collect();
+        if pts.len() > MAX_READ {
+            self.report.skip("custom ease curves too long to read (drawn with the simple ease)");
+            return None;
+        }
+        let Some(curve) = CustomEase::from_flat(&pts) else {
+            self.report.skip("custom ease curves with a broken point list (drawn with the simple ease)");
+            return None;
+        };
+        let near = |p: Option<&Vec2>, x: f32, y: f32| p.is_some_and(|p| (p.x - x).abs() < 1e-3 && (p.y - y).abs() < 1e-3);
+        if !near(pts.first(), 0.0, 0.0) || !near(pts.last(), 1.0, 1.0) {
+            self.report.skip("custom ease curves not from (0, 0) to (1, 1) (ends moved there)");
+        }
+        if pts.len() / 3 + 1 > anicraft_doc::MAX_EASE_POINTS {
+            self.report.skip("custom ease curves over 64 points (thinned)");
+        }
+        Some(match curve.points() {
+            [a, b] => Easing::CubicBezier(a.out.x, a.out.y, b.at.x + b.h_in.x, b.at.y + b.h_in.y),
+            _ => Easing::Custom(Arc::new(curve)),
         })
     }
 
@@ -694,10 +879,19 @@ impl<'a> Builder<'a> {
                 candidates.push(format!("bin/{data}"));
             }
             let short: String = name.rsplit('/').next().unwrap_or(name).chars().take(256).collect();
-            let mut found_data = false;
+            let (mut found_data, mut unreadable) = (false, false);
             let mut bitmap = None;
             for path in candidates {
-                let Some(bytes) = (self.read)(&path)? else { continue };
+                let bytes = match (self.read)(&path) {
+                    Ok(Some(bytes)) => bytes,
+                    Ok(None) => continue,
+                    // Damaged or over the archive's limits: this bitmap is left out, not
+                    // the whole document (#226).
+                    Err(_) => {
+                        unreadable = true;
+                        continue;
+                    }
+                };
                 found_data = true;
                 if let Ok(b) = Bitmap::from_image(BitmapId(0), short.clone(), bytes) {
                     bitmap = Some(b);
@@ -714,10 +908,210 @@ impl<'a> Builder<'a> {
                     self.doc.bitmaps.push(Arc::new(b));
                 }
                 None if found_data => self.report.skip("bitmaps stored in Animate's own format"),
+                None if unreadable => self.report.skip("bitmaps whose files couldn't be read"),
                 None => self.report.skip("missing bitmap files"),
             }
         }
         Ok(())
+    }
+
+    /// Reads the document's sound library items (ADR 0057, ADR 0086). Like a bitmap, each one's
+    /// sound is looked for as the original file in `LIBRARY/` and then as its data file in
+    /// `bin/`, and is used when it is a WAV, Ogg Vorbis or MP3 file the decoders read. Animate's
+    /// own encoding of the data file is not public, so those sounds are reported by name, as is
+    /// every other sound that doesn't come across, with its format and why (ADR 0039).
+    fn register_sounds(&mut self, root: &X) -> Result<(), XflError> {
+        for item in root.list("media").iter().filter(|i| i.name == "DOMSoundItem").take(MAX_SOUNDS) {
+            let Some(name) = item.attr("name").filter(|n| !self.sounds.contains_key(*n)) else { continue };
+            let mut candidates = Vec::new();
+            if let Some(href) = item.attr("href") {
+                candidates.push((format!("LIBRARY/{href}"), false));
+            }
+            if let Some(data) = item.attr("soundDataHRef") {
+                candidates.push((format!("bin/{data}"), true));
+            }
+            let short: String = name.rsplit('/').next().unwrap_or(name).chars().take(256).collect();
+            let shown: String = name.chars().take(256).collect();
+            // Why the first file found didn't decode, and whether one couldn't be read at all.
+            let (mut why, mut unreadable) = (None, false);
+            let mut sound = None;
+            for (path, from_bin) in candidates {
+                let bytes = match (self.read)(&path) {
+                    Ok(Some(bytes)) => bytes,
+                    Ok(None) => continue,
+                    // Damaged or over the archive's limits: this sound is left out, not
+                    // the whole document (#226).
+                    Err(_) => {
+                        unreadable = true;
+                        continue;
+                    }
+                };
+                // Named from the first bytes, before the data moves into the sound.
+                let head: Vec<u8> = bytes.iter().take(4096).copied().collect();
+                match anicraft_doc::Sound::from_data(anicraft_doc::SoundId(0), short.clone(), bytes) {
+                    Ok(s) => {
+                        sound = Some(s);
+                        break;
+                    }
+                    Err(e) => {
+                        why.get_or_insert_with(|| sound_format(&head, from_bin, &e));
+                    }
+                }
+            }
+            match (sound, why) {
+                (Some(mut s), _) => {
+                    s.id = anicraft_doc::SoundId(self.doc.alloc_id());
+                    self.place_in_folder(name, anicraft_doc::LibraryItem::Sound(s.id));
+                    self.sounds.insert(name.to_string(), s.id);
+                    self.doc.sounds.push(Arc::new(s));
+                }
+                (None, Some(why)) => self.report.skip_named("sounds in formats AniCraft can't decode", format!("{shown}: {why}")),
+                (None, None) if unreadable => self.report.skip_named("sounds whose files couldn't be read", shown),
+                (None, None) => self.report.skip_named("missing sound files", shown),
+            }
+        }
+        Ok(())
+    }
+
+    /// Reads the document's video items (`DOMVideoItem`, ADR 0086). AniCraft has no video
+    /// playback: a video whose data is an FLV file in the Screen Video codec comes across as a
+    /// bitmap of its first frame (in the Library beside where the video was, named
+    /// "<video> (first frame)"), which its instances show; every video is named in the report
+    /// with its format and length, so nothing is dropped unseen. The data is looked for as the
+    /// original file (`href`, or `sourceExternalFilepath` inside the package) in `LIBRARY/`, then
+    /// as its data file in `bin/` (`videoDataHRef`).
+    fn register_videos(&mut self, root: &X) {
+        for item in root.list("media").iter().filter(|i| i.name == "DOMVideoItem").take(MAX_VIDEOS) {
+            let Some(name) = item.attr("name").filter(|n| !self.videos.contains_key(*n)) else { continue };
+            let mut candidates = Vec::new();
+            if let Some(href) = item.attr("href") {
+                candidates.push(format!("LIBRARY/{href}"));
+            }
+            if let Some(src) = item.attr("sourceExternalFilepath").and_then(|p| p.strip_prefix("./")) {
+                candidates.push(src.replace('\\', "/"));
+            }
+            if let Some(data) = item.attr("videoDataHRef") {
+                candidates.push(format!("bin/{data}"));
+            }
+            let shown: String = name.chars().take(256).collect();
+            let short: String = name.rsplit('/').next().unwrap_or(name).chars().take(240).collect();
+            let (mut still, mut format, mut unreadable) = (None, None, false);
+            for path in candidates {
+                let bytes = match (self.read)(&path) {
+                    Ok(Some(bytes)) => bytes,
+                    Ok(None) => continue,
+                    Err(_) => {
+                        unreadable = true;
+                        continue;
+                    }
+                };
+                match crate::video::read(&bytes) {
+                    crate::video::Video::Frame { width, height, rgba } => {
+                        still = Bitmap::from_rgba(BitmapId(0), format!("{short} (first frame)"), width, height, rgba);
+                        if still.is_some() {
+                            break;
+                        }
+                    }
+                    crate::video::Video::Unreadable(f) => {
+                        format.get_or_insert(f);
+                    }
+                }
+            }
+            // Its length as the item gives it (seconds), else from its frames and rate.
+            let seconds = item.f32("length").filter(|s| s.is_finite() && *s >= 0.0).or_else(|| {
+                let (frames, fps) = (item.f32("frameCount")?, item.f32("fps")?);
+                (frames.is_finite() && fps.is_finite() && fps > 0.0).then(|| frames.max(0.0) / fps)
+            });
+            let length = seconds.map(|s| format!(", {:.1} s", s.min(1.0e7))).unwrap_or_default();
+            let id = match still {
+                Some(mut b) => {
+                    b.id = BitmapId(self.doc.alloc_id());
+                    let id = b.id;
+                    let folder = name.rsplit_once('/').map(|(f, _)| f);
+                    let path = match folder {
+                        Some(f) => format!("{f}/{}", b.name),
+                        None => b.name.clone(),
+                    };
+                    self.place_in_folder(&path, anicraft_doc::LibraryItem::Bitmap(id));
+                    self.doc.bitmaps.push(Arc::new(b));
+                    self.report.skip_named("videos (first frame kept as a still)", format!("{shown}: Screen Video{length}"));
+                    Some(id)
+                }
+                None => {
+                    let why = match (format, unreadable) {
+                        (Some(f), _) => f,
+                        (None, true) => "its file couldn't be read".into(),
+                        (None, false) => "its file is missing".into(),
+                    };
+                    self.report.skip_named("videos AniCraft can't play", format!("{shown}: {why}{length}"));
+                    None
+                }
+            };
+            self.videos.insert(name.to_string(), id);
+        }
+    }
+
+    /// The sound on a frame (`soundName`, the library item), with its sync (`soundSync`: event,
+    /// start, stop or stream), repeats (`soundLoopMode` loop or repeat, `soundLoop` times) and
+    /// effect (`soundEffect`, and the volume points of a custom one in `SoundEnvelope`).
+    /// Buttons' frames included: they play as the pointer changes the button's state.
+    fn frame_sound(&mut self, f: &X, name: &str) -> Option<FrameSound> {
+        let Some(id) = self.sounds.get(name).copied() else {
+            self.report.skip("frame sounds whose sound isn't in the package");
+            return None;
+        };
+        let mut fs = FrameSound::new(id);
+        fs.sync = match f.attr("soundSync").map(str::trim) {
+            Some("start") => SoundSync::Start,
+            Some("stop") => SoundSync::Stop,
+            Some("stream") => SoundSync::Stream,
+            _ => SoundSync::Event,
+        };
+        fs.looping = f.attr("soundLoopMode").map(str::trim) == Some("loop");
+        fs.repeat = f.u32("soundLoop").unwrap_or(1).clamp(1, anicraft_doc::sound::MAX_REPEAT);
+        fs.effect = self.sound_effect(f);
+        if f.attr("inPoint44").is_some() || f.attr("outPoint44").is_some() {
+            self.report.skip("sound in and out points (played whole)");
+        }
+        Some(fs)
+    }
+
+    /// A frame sound's effect: a preset by its name in the Effect menu (`soundEffect`), or the
+    /// volume points of its envelope (`SoundEnvelope`; each `SoundEnvelopePoint` a time in
+    /// samples at 44.1 kHz, `mark44`, and a level per channel, `level0` left and `level1` right,
+    /// `0..=32768`, as the SWF format's `SOUNDENVELOPE` keeps them).
+    fn sound_effect(&mut self, f: &X) -> SoundEffect {
+        let key: String = f.attr("soundEffect").unwrap_or("").chars().filter(char::is_ascii_alphanumeric).map(|c| c.to_ascii_lowercase()).collect();
+        let preset = match key.as_str() {
+            "" | "none" => Some(SoundEffect::None),
+            "left" | "leftchannel" => Some(SoundEffect::LeftChannel),
+            "right" | "rightchannel" => Some(SoundEffect::RightChannel),
+            "fadelefttoright" => Some(SoundEffect::FadeLeftToRight),
+            "faderighttoleft" => Some(SoundEffect::FadeRightToLeft),
+            "fadein" => Some(SoundEffect::FadeIn),
+            "fadeout" => Some(SoundEffect::FadeOut),
+            _ => None,
+        };
+        let points: Vec<EnvelopePoint> = f
+            .child("SoundEnvelope")
+            .map(|e| e.children.iter().filter(|p| p.name == "SoundEnvelopePoint").take(anicraft_doc::sound::MAX_ENVELOPE_POINTS).collect::<Vec<_>>())
+            .unwrap_or_default()
+            .into_iter()
+            .map(|p| {
+                let level = |k: &str| p.f32(k).map_or(1.0, |v| v / 32_768.0);
+                EnvelopePoint::new(f64::from(p.f32("mark44").unwrap_or(0.0)) / 44_100.0, level("level0"), level("level1"))
+            })
+            .collect();
+        match preset {
+            // An envelope without a preset name (or named "custom") plays as its points.
+            Some(SoundEffect::None) | None if !points.is_empty() => SoundEffect::Custom(clean_points(&points)),
+            Some(p) => p,
+            None if key == "custom" => SoundEffect::None,
+            None => {
+                self.report.skip("unknown sound effects (played without)");
+                SoundEffect::None
+            }
+        }
     }
 
     /// Allocates ids for every symbol the document lists, parsing their files.
@@ -728,11 +1122,19 @@ impl<'a> Builder<'a> {
             if !seen.insert(href.to_string()) {
                 continue;
             }
-            let Some(bytes) = (self.read)(&format!("LIBRARY/{href}"))? else {
-                self.report.skip("missing library files");
-                continue;
+            // A damaged symbol file is left out (its instances with it), not the whole
+            // document (#226).
+            let item = match (self.read)(&format!("LIBRARY/{href}")).map(|b| b.map(|b| xml::parse(&b))) {
+                Ok(Some(Ok(item))) => item,
+                Ok(None) => {
+                    self.report.skip("missing library files");
+                    continue;
+                }
+                Err(_) | Ok(Some(Err(_))) => {
+                    self.report.skip("library files that couldn't be read");
+                    continue;
+                }
             };
-            let item = xml::parse(&bytes)?;
             if item.name != "DOMSymbolItem" {
                 continue;
             }
@@ -769,13 +1171,34 @@ impl<'a> Builder<'a> {
         Some(l)
     }
 
+    /// A symbol's 9-slice guides (ADR 0055): `scaleGridLeft`, `scaleGridRight`, `scaleGridTop`
+    /// and `scaleGridBottom` on the `DOMSymbolItem`, in the symbol's space, written when its
+    /// guides are on. All four or none; guides given the wrong way round are put in order.
+    fn scale_grid(&mut self, item: &X) -> Option<ScaleGrid> {
+        let keys = ["scaleGridLeft", "scaleGridRight", "scaleGridTop", "scaleGridBottom"];
+        if keys.iter().all(|k| item.attr(k).is_none()) {
+            return None;
+        }
+        let v: Vec<f32> = keys.iter().filter_map(|k| item.f32(k)).collect();
+        let grid = match v[..] {
+            [l, r, t, b] => Some(ScaleGrid { left: l.min(r), right: l.max(r), top: t.min(b), bottom: t.max(b) }),
+            _ => None,
+        };
+        let grid = grid.filter(|g| g.check().is_ok());
+        if grid.is_none() {
+            self.report.skip("9-slice guides that aren't usable (left out)");
+        }
+        grid
+    }
+
     /// The script settings of the package's publish profile (`PublishSettings.xml`): the
     /// language its frame scripts are written in (`ActionScriptVersion`; 3 when the file
     /// doesn't say) and the document class (`DocumentClass`). The profile marked current is
     /// used, else the first. A missing or unreadable file changes nothing: it is settings, not
     /// content.
     fn publish_settings(&mut self) -> Result<(), XflError> {
-        let Some(bytes) = (self.read)("PublishSettings.xml")? else { return Ok(()) };
+        // Optional: settings that can't be read leave the defaults (#226).
+        let Ok(Some(bytes)) = (self.read)("PublishSettings.xml") else { return Ok(()) };
         let Ok(root) = xml::parse(&bytes) else { return Ok(()) };
         let profiles: Vec<&X> = root.children.iter().filter(|c| c.name == "flash_profile").collect();
         let profile = profiles.iter().find(|p| p.bool("current") == Some(true)).or(profiles.first()).copied().unwrap_or(&root);
@@ -803,7 +1226,8 @@ impl<'a> Builder<'a> {
                 None => Timeline { layers: vec![Arc::new(Layer::new(LayerId(self.doc.alloc_id()), "Layer 1"))] },
             };
             let short = name.rsplit('/').next().unwrap_or(&name).to_string();
-            self.doc.library.push(Arc::new(Symbol { id, name: short, kind, linkage, timeline }));
+            let scale_grid = self.scale_grid(&item);
+            self.doc.library.push(Arc::new(Symbol { id, name: short, kind, linkage, scale_grid, scale_grid_kept: None, timeline }));
             self.place_in_folder(&name, anicraft_doc::LibraryItem::Symbol(id));
         }
     }
@@ -847,7 +1271,7 @@ fn import_from<'a>(read: &'a Reader<'a>, fonts: Option<&'a Fonts>) -> Result<(Do
     if root.name != "DOMDocument" {
         return Err(XflError::NotXfl(format!("the root element is <{}>", root.name)));
     }
-    let mut b = Builder { doc: Document::default(), read, ids: HashMap::new(), pending: Vec::new(), language: Language::ActionScript3, bitmaps: HashMap::new(), report: Report::default(), fonts, faces: HashMap::new() };
+    let mut b = Builder { doc: Document::default(), read, ids: HashMap::new(), pending: Vec::new(), language: Language::ActionScript3, bitmaps: HashMap::new(), sounds: HashMap::new(), videos: HashMap::new(), report: Report::default(), fonts, faces: HashMap::new() };
     b.publish_settings()?;
     // Only symbols keep a script class yet.
     for _ in root.list("media").iter().filter(|m| m.attr("linkageClassName").is_some_and(|c| !c.trim().is_empty())) {
@@ -859,10 +1283,13 @@ fn import_from<'a>(read: &'a Reader<'a>, fonts: Option<&'a Fonts>) -> Result<(Do
         width: root.f32("width").unwrap_or(550.0).clamp(1.0, 8192.0) as u32,
         height: root.f32("height").unwrap_or(400.0).clamp(1.0, 8192.0) as u32,
         fps: root.f32("frameRate").unwrap_or(24.0).clamp(1.0, 120.0),
-        background: color(&root, "backgroundColor", "__none"),
+        // Animate leaves the default, white, out of the file (#163).
+        background: if root.attr("backgroundColor").is_some() { color(&root, "backgroundColor", "__none") } else { Rgba::WHITE },
     };
     b.register_folders(&root);
     b.register_bitmaps(&root)?;
+    b.register_sounds(&root)?;
+    b.register_videos(&root);
     b.register_symbols(&root)?;
     b.build_symbols();
     // Every DOMTimeline is a scene, in order.
@@ -870,14 +1297,14 @@ fn import_from<'a>(read: &'a Reader<'a>, fonts: Option<&'a Fonts>) -> Result<(Do
     for (i, tl) in scenes.iter().enumerate() {
         let name: String = tl.attr("name").filter(|n| !n.trim().is_empty()).map_or_else(|| format!("Scene {}", i + 1), |n| n.chars().take(256).collect());
         let timeline = b.timeline(tl);
-        b.doc.scenes.push(Arc::new(Scene { name, timeline }));
+        b.doc.scenes.push(Arc::new(Scene { name, timeline, guides: Vec::new() }));
     }
     if !b.doc.library_tree.folders.is_empty() {
         b.report.keep("library folders");
     }
     if b.doc.scenes.is_empty() {
         let timeline = Timeline { layers: vec![Arc::new(Layer::new(LayerId(b.doc.alloc_id()), "Layer 1"))] };
-        b.doc.scenes.push(Arc::new(Scene { name: "Scene 1".into(), timeline }));
+        b.doc.scenes.push(Arc::new(Scene { name: "Scene 1".into(), timeline, guides: Vec::new() }));
     }
     Ok((b.doc, b.report))
 }
@@ -908,8 +1335,30 @@ fn fla_from(data: &[u8], fonts: Option<&Fonts>) -> Result<(Document, Report), Xf
         return Err(XflError::NotXfl("this .fla was saved by Flash CS4 or earlier, in a format AniCraft can't read: open it in Animate and save it again".into()));
     }
     let archive = crate::zip::Archive::open(data)?;
-    let read = |p: &str| -> Result<Option<Vec<u8>>, XflError> { Ok(archive.read(p)?) };
+    let root = package_root(&archive)?;
+    let read = |p: &str| -> Result<Option<Vec<u8>>, XflError> { Ok(archive.read(&format!("{root}{p}"))?) };
     import_from(&read, fonts)
+}
+
+/// Where the package sits in an archive (ADR 0086): at its root, as Animate saves a `.fla`, or
+/// inside one top folder (`walk/DOMDocument.xml`), as zipping an XFL folder makes it. The
+/// `__MACOSX` folder some zip tools add beside it is ignored. An archive holding several
+/// documents in top folders is refused with their names rather than one picked.
+fn package_root(archive: &crate::zip::Archive<'_>) -> Result<String, XflError> {
+    if archive.names().any(|n| n == "DOMDocument.xml") {
+        return Ok(String::new());
+    }
+    let mut tops: Vec<&str> = archive.names().filter_map(|n| n.strip_suffix("/DOMDocument.xml")).filter(|top| !top.contains('/') && *top != "__MACOSX").collect();
+    tops.sort_unstable();
+    match tops.as_slice() {
+        [] => Ok(String::new()),
+        [top] => Ok(format!("{top}/")),
+        many => {
+            let names: Vec<String> = many.iter().take(5).map(|t| t.chars().take(80).collect()).collect();
+            let more = if many.len() > 5 { format!(" and {} more", many.len() - 5) } else { String::new() };
+            Err(XflError::NotXfl(format!("the archive holds {} Animate documents ({}{more}): unzip it and open one of them", many.len(), names.join(", "))))
+        }
+    }
 }
 
 /// Whether the file at `path` starts as a zip archive or an old binary `.fla` does.

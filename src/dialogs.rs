@@ -201,7 +201,7 @@ impl Entry {
 
 /// Commands the palette can run without extra input (everything optional, or prompted).
 fn runnable(c: &CommandSpec) -> bool {
-    if matches!(c.id, "file.open" | "file.recovery_list" | "file.save_as" | "file.import" | "file.export_png" | "file.export_gif" | "file.export_svg" | "file.export_sprite_sheet" | "file.export_video" | "file.export_lottie" | "file.export_html" | "file.export_png_sequence" | "modify.convert_to_symbol" | "layer.rename" | "scene.rename" | "plugin.install") {
+    if matches!(c.id, "file.open" | "file.recovery_list" | "file.save_as" | "file.import" | "file.export_png" | "file.export_gif" | "file.export_apng" | "file.export_webp" | "file.export_svg" | "file.export_sprite_sheet" | "file.export_video" | "file.export_lottie" | "file.export_html" | "file.export_png_sequence" | "modify.convert_to_symbol" | "layer.rename" | "scene.rename" | "plugin.install") {
         return true;
     }
     let inner = c.params.trim().trim_start_matches('{').trim_end_matches('}');
@@ -217,6 +217,7 @@ fn entries() -> Vec<Entry> {
     v.push(Entry::View(tr_noop!("Preview Through Camera"), "", App::toggle_camera_preview));
     v.push(Entry::View(tr_noop!("Fit Stage in Window"), "Ctrl+0", |a| a.view.fit = true));
     v.push(Entry::View(tr_noop!("Keyboard Shortcuts"), "F1", |a| a.show_shortcuts = true));
+    v.push(Entry::View(tr_noop!("User Guide"), "", App::open_user_guide));
     v.push(Entry::View(tr_noop!("Project Files & Docs"), "", |a| a.show_files = true));
     v.push(Entry::View(tr_noop!("Licenses & Notices"), "", |a| a.show_licenses = true));
     v.push(Entry::View(tr_noop!("Preferences"), "Ctrl+U", App::open_prefs));
@@ -371,6 +372,8 @@ fn preferences(app: &mut App, ctx: &egui::Context) {
     let sys = app.system_fonts.clone();
     let (bundled_ui, bundled_mono) = crate::theme::bundled_names();
     let mut reset_confirms = false;
+    let mut about_act: Option<crate::desktop_ui::Act> = None;
+    let to_about = std::mem::take(&mut app.prefs_to_about);
     let title = if crate::platform::OS == crate::platform::Os::Mac { tr!("Settings") } else { tr!("Preferences") };
     let shown = egui::Window::new(title)
         // An id of its own: the window keeps its place when the language changes.
@@ -417,10 +420,30 @@ fn preferences(app: &mut App, ctx: &egui::Context) {
                     ui.add_space(4.0);
                     form_row(ui, LW, tr!("Theme"), |ui| {
                         ui.vertical(|ui| {
+                            // Follow system (ADR 0064), then each palette by hand.
+                            let was = if p.follows_system() { None } else { Some(p.theme) };
+                            let mut choice = was;
+                            crate::theme::radio_value(ui, &mut choice, None, text(Type::Body, tr!("Follow system")));
+                            // What following would show now, and why (ADR 0064, ADR 0077).
+                            let look = app.system_look;
+                            let says = match (look.high_contrast, look.dark) {
+                                (Some(true), _) => tr!("Light or dark as your system's apps are, and high contrast while it asks for more contrast. It does now, so it is high contrast."),
+                                (_, Some(false)) => tr!("Light or dark as your system's apps are, and high contrast while it asks for more contrast. Your system is light now."),
+                                (_, Some(true)) => tr!("Light or dark as your system's apps are, and high contrast while it asks for more contrast. Your system is dark now."),
+                                (_, None) => tr!("Light or dark as your system's apps are, and high contrast while it asks for more contrast. This system doesn't say whether it is light, so it is dark."),
+                            };
+                            form_note(ui, toggle_indent, text(Type::Caption, says));
+                            ui.add_space(2.0);
                             for (palette, name, tip) in crate::theme::Palette::ALL {
-                                crate::theme::radio_value(ui, &mut p.theme, palette, text(Type::Body, crate::i18n::t(name)));
+                                crate::theme::radio_value(ui, &mut choice, Some(palette), text(Type::Body, crate::i18n::t(name)));
                                 form_note(ui, toggle_indent, text(Type::Caption, crate::i18n::t(tip)));
                                 ui.add_space(2.0);
+                            }
+                            if choice != was {
+                                p.theme_follows_system = Some(choice.is_none());
+                                if let Some(t) = choice {
+                                    p.theme = t;
+                                }
                             }
                         });
                     });
@@ -485,12 +508,34 @@ fn preferences(app: &mut App, ctx: &egui::Context) {
                             State::Running { adapter, direct: true } => Some(tr!("Drawing on {adapter}, straight into the window.", adapter = adapter)),
                             State::Running { adapter, direct: false } => Some(tr!("Drawing on {adapter}, then copied to the window (slower: the window's graphics device can't be shared).", adapter = adapter)),
                             State::Failed(why) => Some(tr!("The graphics card can't draw the stage, so the CPU does: {why}", why = why)),
+                            State::Stopped { why, retry_at: Some(_) } => Some(tr!("The graphics card stopped drawing the stage, so the CPU does for now; AniCraft tries the graphics card again soon. It said: {why}", why = why)),
+                            State::Stopped { why, retry_at: None } => Some(tr!("The graphics card stopped drawing the stage, so the CPU does for the rest of this session. It said: {why}", why = why)),
                         };
                         if crate::gpu_stage::wanted(p.stage_renderer) != p.stage_renderer {
                             form_note(ui, LW, text(Type::Caption, tr!("ANICRAFT_STAGE_RENDERER is set, and it takes precedence over this choice.")));
                         }
                         if let Some(s) = status {
                             form_note(ui, LW, text(Type::Caption, s));
+                        }
+                    }
+                    // How the window itself is drawn (#207, #255): read when AniCraft starts.
+                    let backends = crate::platform::window_backends(crate::platform::OS);
+                    if !backends.is_empty() {
+                        ui.add_space(4.0);
+                        form_row(ui, LW, tr!("Window graphics"), |ui| {
+                            ui.vertical(|ui| {
+                                for &choice in backends {
+                                    let (name, tip) = choice.describe();
+                                    crate::theme::radio_value(ui, &mut p.window_backend, choice, text(Type::Body, crate::i18n::t(name)));
+                                    form_note(ui, toggle_indent, text(Type::Caption, crate::i18n::t(tip)));
+                                    ui.add_space(2.0);
+                                }
+                            });
+                        });
+                        form_note(ui, LW, text(Type::Caption, tr!("A change takes effect the next time AniCraft starts. If a way doesn't work, AniCraft starts with the next one.")));
+                        if let Some(log) = crate::startup::log_path() {
+                            form_note(ui, LW, text(Type::Caption, tr!("If AniCraft has trouble starting, this start-up log says why (attach it to a bug report):")));
+                            form_note(ui, LW, text(Type::Path, log.display().to_string()));
                         }
                     }
                 });
@@ -502,6 +547,40 @@ fn preferences(app: &mut App, ctx: &egui::Context) {
                         });
                     });
                     form_note(ui, LW, text(Type::Caption, tr!("The timeline always leaves room before frame 1 for the playhead; this adds more. It stays the same at every zoom.")));
+                });
+
+                // Sound while you work (ADR 0095): the listener's, never the document's.
+                section(ui, "prefs_sound", Section::Rule, tr!("Sound"), None, |ui| {
+                    form_row(ui, LW, tr!("Playback volume"), |ui| {
+                        let mut pct = (p.sound_volume * 100.0).round();
+                        if crate::a11y::slider(ui, &mut pct, 0.0..=100.0, tr!("Playback volume"), crate::a11y::SliderLook { suffix: " %", max_decimals: Some(0), step: Some(1.0), logarithmic: false }).changed() {
+                            p.sound_volume = pct / 100.0;
+                        }
+                    });
+                    form_row(ui, LW, tr!("Sounds"), |ui| {
+                        ui.vertical(|ui| {
+                            crate::theme::checkbox(ui, &mut p.sound_muted, text(Type::Body, tr!("Mute sounds")));
+                            crate::theme::checkbox(ui, &mut p.audio_scrubbing, text(Type::Body, tr!("Audio scrubbing")));
+                            form_note(ui, toggle_indent, text(Type::Caption, tr!("Dragging the playhead plays a short slice of the stream sounds under it. Volume and mute are for playback only: exports keep their sound.")));
+                        });
+                    });
+                });
+
+                // Test Movie in a window of its own, or inside the editor (ADR 0062).
+                section(ui, "prefs_test_movie", Section::Rule, tr!("Test Movie"), None, |ui| {
+                    form_row(ui, LW, tr!("Window"), |ui| {
+                        ui.vertical(|ui| {
+                            crate::theme::checkbox(ui, &mut p.test_movie_window, text(Type::Body, tr!("Play Test Movie in a window of its own")));
+                            let note = match crate::platform::movie_host(ui.ctx().embed_viewports(), true) {
+                                crate::platform::MovieHost::Inside(why) => why.note().map(crate::i18n::t),
+                                crate::platform::MovieHost::Window if !crate::platform::window_positions() => Some(tr!("Off: it floats inside the editor. On Wayland the desktop places the window, so it can't open where it was last.")),
+                                crate::platform::MovieHost::Window => Some(tr!("Off: it floats inside the editor. The window opens where it was last.")),
+                            };
+                            if let Some(note) = note {
+                                form_note(ui, toggle_indent, text(Type::Caption, note));
+                            }
+                        });
+                    });
                 });
 
                 section(ui, "prefs_files", Section::Rule, tr!("Files"), None, |ui| {
@@ -552,6 +631,15 @@ fn preferences(app: &mut App, ctx: &egui::Context) {
                     });
                 });
 
+                // Where this copy keeps its things, portable or installed, and an AppImage's
+                // applications menu entry (ADR 0094).
+                let (head, _) = crate::theme::section_with_header(ui, "prefs_about", Section::Rule, tr!("About"), None, |ui| {
+                    about_act = crate::desktop_ui::about(app, ui, LW);
+                });
+                if to_about {
+                    head.scroll_to_me(Some(egui::Align::TOP));
+                }
+
             });
             ui.separator();
             ui.label(text(Type::Caption, tr!("{os} · settings stored in {place}", os = crate::platform::OS.name(), place = crate::platform::settings_place())));
@@ -559,6 +647,9 @@ fn preferences(app: &mut App, ctx: &egui::Context) {
     a11y::name_title_bar(&shown, title);
     if reset_confirms {
         app.skip_confirm.clear();
+    }
+    if let Some(a) = about_act {
+        crate::desktop_ui::apply(app, a);
     }
     if p != app.prefs {
         app.set_prefs(ctx, p);
@@ -652,7 +743,7 @@ enum SheetAct {
 
 /// Fixed keys: handled before the shortcut map, shown read-only. Groups and names are English
 /// keys (groups match [`GROUP_ORDER`]), translated where they are drawn.
-fn fixed_rows() -> Vec<(&'static str, &'static str, Vec<&'static str>)> {
+pub(crate) fn fixed_rows() -> Vec<(&'static str, &'static str, Vec<&'static str>)> {
     let quit = if crate::platform::OS == crate::platform::Os::Mac { tr_noop!("Quit") } else { tr_noop!("Exit") };
     let (essentials, view, editing) = (tr_noop!("Essentials"), tr_noop!("View"), tr_noop!("Editing"));
     // Keys in registry notation; the words among them are translated by `fixed_key`.
@@ -692,7 +783,7 @@ fn fixed_key(k: &str) -> String {
 }
 
 /// Section order, by group key (English; the titles are translated where they are drawn).
-const GROUP_ORDER: [&str; 13] = [
+pub(crate) const GROUP_ORDER: [&str; 13] = [
     tr_noop!("Essentials"),
     tr_noop!("Tools"),
     tr_noop!("File"),

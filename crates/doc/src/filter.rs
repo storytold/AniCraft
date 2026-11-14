@@ -401,6 +401,291 @@ impl Filter {
     }
 }
 
+/// A number of a filter a motion tween can animate (ADR 0092), in the units the Motion Editor
+/// and the Filters panel show: pixels, percent (strength) and degrees.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum FilterParam {
+    BlurX,
+    BlurY,
+    /// Percent (100 = the filter's full strength).
+    Strength,
+    /// Degrees, clockwise from the right; not wrapped in keys, so 0 → 720 turns twice.
+    Angle,
+    Distance,
+    /// Adjust Color's four.
+    Brightness,
+    Contrast,
+    Saturation,
+    Hue,
+}
+
+impl FilterParam {
+    pub const ALL: [FilterParam; 9] = [
+        FilterParam::BlurX,
+        FilterParam::BlurY,
+        FilterParam::Strength,
+        FilterParam::Angle,
+        FilterParam::Distance,
+        FilterParam::Brightness,
+        FilterParam::Contrast,
+        FilterParam::Saturation,
+        FilterParam::Hue,
+    ];
+
+    /// The name in files and commands (`blur_x`, `strength`…), as the filter's own field.
+    pub fn key(self) -> &'static str {
+        match self {
+            FilterParam::BlurX => "blur_x",
+            FilterParam::BlurY => "blur_y",
+            FilterParam::Strength => "strength",
+            FilterParam::Angle => "angle",
+            FilterParam::Distance => "distance",
+            FilterParam::Brightness => "brightness",
+            FilterParam::Contrast => "contrast",
+            FilterParam::Saturation => "saturation",
+            FilterParam::Hue => "hue",
+        }
+    }
+
+    pub fn from_key(s: &str) -> Option<FilterParam> {
+        let s = s.trim().to_ascii_lowercase().replace([' ', '-'], "_");
+        let s = match s.as_str() {
+            "blurx" => "blur_x",
+            "blury" => "blur_y",
+            other => other,
+        };
+        FilterParam::ALL.into_iter().find(|p| p.key() == s)
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            FilterParam::BlurX => "Blur X",
+            FilterParam::BlurY => "Blur Y",
+            FilterParam::Strength => "Strength",
+            FilterParam::Angle => "Angle",
+            FilterParam::Distance => "Distance",
+            FilterParam::Brightness => "Brightness",
+            FilterParam::Contrast => "Contrast",
+            FilterParam::Saturation => "Saturation",
+            FilterParam::Hue => "Hue",
+        }
+    }
+
+    pub fn unit(self) -> &'static str {
+        match self {
+            FilterParam::BlurX | FilterParam::BlurY | FilterParam::Distance => "px",
+            FilterParam::Strength => "%",
+            FilterParam::Angle | FilterParam::Hue => "°",
+            FilterParam::Brightness | FilterParam::Contrast | FilterParam::Saturation => "",
+        }
+    }
+
+    /// Values a key may hold (the filter itself then brings the value into its own range).
+    pub fn range(self) -> std::ops::RangeInclusive<f32> {
+        match self {
+            FilterParam::BlurX | FilterParam::BlurY => 0.0..=MAX_BLUR,
+            FilterParam::Strength => 0.0..=1000.0,
+            FilterParam::Angle => -100_000.0..=100_000.0,
+            FilterParam::Distance => -1000.0..=1000.0,
+            FilterParam::Brightness | FilterParam::Contrast | FilterParam::Saturation => -100.0..=100.0,
+            FilterParam::Hue => -180.0..=180.0,
+        }
+    }
+
+    fn index(self) -> usize {
+        FilterParam::ALL.iter().position(|p| *p == self).unwrap_or(0)
+    }
+}
+
+/// How many [`FilterParam`]s there are.
+pub const FILTER_PARAMS: usize = 9;
+
+impl Filter {
+    /// The numbers of this filter a motion tween can animate, in the Filters panel's order.
+    pub fn params(&self) -> &'static [FilterParam] {
+        use FilterParam::*;
+        match self {
+            Filter::Blur { .. } => &[BlurX, BlurY],
+            Filter::Glow { .. } => &[BlurX, BlurY, Strength],
+            Filter::DropShadow { .. } | Filter::Bevel { .. } | Filter::GradientGlow { .. } | Filter::GradientBevel { .. } => &[BlurX, BlurY, Strength, Angle, Distance],
+            Filter::AdjustColor { .. } => &[Brightness, Contrast, Saturation, Hue],
+        }
+    }
+
+    /// The filter's value of `p` in the Motion Editor's units; `None` when it has no such number.
+    pub fn param(&self, p: FilterParam) -> Option<f32> {
+        if !self.params().contains(&p) {
+            return None;
+        }
+        let mut out = None;
+        self.visit(p, |v, scale| out = Some(*v * scale));
+        out
+    }
+
+    /// Sets `p` to `v` (Motion Editor units, brought into the filter's range when drawn); false
+    /// when the filter has no such number.
+    pub fn set_param(&mut self, p: FilterParam, v: f32) -> bool {
+        if !self.params().contains(&p) || !v.is_finite() {
+            return false;
+        }
+        let mut done = false;
+        self.visit_mut(p, |x, scale| {
+            *x = v / scale;
+            done = true;
+        });
+        done
+    }
+
+    /// The field holding `p` and the factor to the Motion Editor's units (strength in percent).
+    fn visit(&self, p: FilterParam, f: impl FnOnce(&f32, f32)) {
+        let mut c = self.clone();
+        c.visit_mut(p, |x, s| f(x, s));
+    }
+
+    fn visit_mut(&mut self, p: FilterParam, f: impl FnOnce(&mut f32, f32)) {
+        use FilterParam as P;
+        let field: Option<(&mut f32, f32)> = match (self, p) {
+            (Filter::Blur { blur_x, .. }, P::BlurX) => Some((blur_x, 1.0)),
+            (Filter::Blur { blur_y, .. }, P::BlurY) => Some((blur_y, 1.0)),
+            (Filter::DropShadow { blur_x, .. } | Filter::Glow { blur_x, .. } | Filter::Bevel { blur_x, .. } | Filter::GradientGlow { blur_x, .. } | Filter::GradientBevel { blur_x, .. }, P::BlurX) => Some((blur_x, 1.0)),
+            (Filter::DropShadow { blur_y, .. } | Filter::Glow { blur_y, .. } | Filter::Bevel { blur_y, .. } | Filter::GradientGlow { blur_y, .. } | Filter::GradientBevel { blur_y, .. }, P::BlurY) => Some((blur_y, 1.0)),
+            (Filter::DropShadow { strength, .. } | Filter::Glow { strength, .. } | Filter::Bevel { strength, .. } | Filter::GradientGlow { strength, .. } | Filter::GradientBevel { strength, .. }, P::Strength) => Some((strength, 100.0)),
+            (Filter::DropShadow { angle, .. } | Filter::Bevel { angle, .. } | Filter::GradientGlow { angle, .. } | Filter::GradientBevel { angle, .. }, P::Angle) => Some((angle, 1.0)),
+            (Filter::DropShadow { distance, .. } | Filter::Bevel { distance, .. } | Filter::GradientGlow { distance, .. } | Filter::GradientBevel { distance, .. }, P::Distance) => Some((distance, 1.0)),
+            (Filter::AdjustColor { brightness, .. }, P::Brightness) => Some((brightness, 1.0)),
+            (Filter::AdjustColor { contrast, .. }, P::Contrast) => Some((contrast, 1.0)),
+            (Filter::AdjustColor { saturation, .. }, P::Saturation) => Some((saturation, 1.0)),
+            (Filter::AdjustColor { hue, .. }, P::Hue) => Some((hue, 1.0)),
+            _ => None,
+        };
+        if let Some((x, s)) = field {
+            f(x, s);
+        }
+    }
+}
+
+/// A filter's number addressed in an instance's list (ADR 0092): the filter's place (0 is the
+/// first, applied first) and the number.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct FilterProp {
+    pub slot: u8,
+    pub param: FilterParam,
+}
+
+/// Most filter slots a motion tween addresses (an instance holds at most 16 filters).
+pub const MAX_FILTER_SLOTS: u8 = 16;
+
+impl FilterProp {
+    /// Its place among the filter properties: by slot, then in [`FilterParam::ALL`] order.
+    pub fn index(self) -> usize {
+        usize::from(self.slot) * FILTER_PARAMS + self.param.index()
+    }
+}
+
+fn yes() -> bool {
+    true
+}
+fn is_on(b: &bool) -> bool {
+    *b
+}
+
+/// One filter in an instance's list (ADR 0091): the filter and whether it is on. A filter
+/// switched off keeps its settings and its place but draws nothing: [`active`] leaves it out,
+/// so every renderer and export sees exactly the list without it. In files it is the filter's
+/// own object with `"enabled": false` added (left out when on), so files from before open as
+/// they were.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct FilterEntry {
+    #[serde(flatten)]
+    pub filter: Filter,
+    #[serde(default = "yes", skip_serializing_if = "is_on")]
+    pub enabled: bool,
+}
+
+impl From<Filter> for FilterEntry {
+    fn from(filter: Filter) -> FilterEntry {
+        FilterEntry { filter, enabled: true }
+    }
+}
+
+impl FilterEntry {
+    /// The same entry with its filter in range.
+    pub fn sanitized(&self) -> FilterEntry {
+        FilterEntry { filter: self.filter.sanitized(), enabled: self.enabled }
+    }
+}
+
+/// The filters that draw, in order and in range: the ones switched on.
+pub fn active(list: &[FilterEntry]) -> Vec<Filter> {
+    list.iter().filter(|e| e.enabled).map(|e| e.filter.sanitized()).collect()
+}
+
+/// Whether any filter in the list draws.
+pub fn any_active(list: &[FilterEntry]) -> bool {
+    list.iter().any(|e| e.enabled)
+}
+
+/// Whether two lists pair up for a tween: the same kinds in the same order (Animate's rule;
+/// switched-off filters count, so switching one off never breaks a tween).
+pub fn pairs_up(a: &[FilterEntry], b: &[FilterEntry]) -> bool {
+    a.len() == b.len() && a.iter().zip(b).all(|(x, y)| std::mem::discriminant(&x.filter) == std::mem::discriminant(&y.filter))
+}
+
+/// The classic tween between two filter lists (ADR 0081, 0091): when both have the same kinds
+/// in the same order, each filter's numbers and colours travel (switches such as Inner and
+/// Knockout, the quality, and whether the filter is on stay the first keyframe's; ramps travel
+/// stop by stop when they have as many stops). `None` when the lists are equal or don't pair
+/// up: the first list holds.
+pub fn lerp_filters(a: &[FilterEntry], b: &[FilterEntry], t: f32) -> Option<Vec<FilterEntry>> {
+    if a == b || !pairs_up(a, b) {
+        return None;
+    }
+    a.iter().zip(b).map(|(x, y)| Some(FilterEntry { filter: x.filter.lerp(&y.filter, t)?, enabled: x.enabled })).collect()
+}
+
+fn ramp_lerp(a: &[GradientStop], b: &[GradientStop], t: f32) -> Vec<GradientStop> {
+    if a.len() != b.len() {
+        return a.to_vec();
+    }
+    a.iter().zip(b).map(|(x, y)| GradientStop { offset: anicraft_geom::lerp(x.offset, y.offset, t), color: x.color.lerp(y.color, t) }).collect()
+}
+
+impl Filter {
+    /// This filter part way to `o` (see [`lerp_filters`]); `None` when `o` is another kind.
+    pub fn lerp(&self, o: &Filter, t: f32) -> Option<Filter> {
+        use anicraft_geom::lerp as l;
+        Some(match (self, o) {
+            (Filter::Blur { blur_x, blur_y, quality }, Filter::Blur { blur_x: bx, blur_y: by, .. }) => Filter::Blur { blur_x: l(*blur_x, *bx, t), blur_y: l(*blur_y, *by, t), quality: *quality },
+            (Filter::DropShadow { blur_x, blur_y, strength, quality, angle, distance, color, inner, knockout, hide_object }, Filter::DropShadow { blur_x: bx, blur_y: by, strength: s, angle: an, distance: d, color: c, .. }) => {
+                Filter::DropShadow { blur_x: l(*blur_x, *bx, t), blur_y: l(*blur_y, *by, t), strength: l(*strength, *s, t), quality: *quality, angle: l(*angle, *an, t), distance: l(*distance, *d, t), color: color.lerp(*c, t), inner: *inner, knockout: *knockout, hide_object: *hide_object }
+            }
+            (Filter::Glow { blur_x, blur_y, strength, quality, color, inner, knockout }, Filter::Glow { blur_x: bx, blur_y: by, strength: s, color: c, .. }) => {
+                Filter::Glow { blur_x: l(*blur_x, *bx, t), blur_y: l(*blur_y, *by, t), strength: l(*strength, *s, t), quality: *quality, color: color.lerp(*c, t), inner: *inner, knockout: *knockout }
+            }
+            (Filter::Bevel { blur_x, blur_y, strength, quality, angle, distance, shadow_color, highlight_color, side, knockout }, Filter::Bevel { blur_x: bx, blur_y: by, strength: s, angle: an, distance: d, shadow_color: sc, highlight_color: hc, .. }) => Filter::Bevel {
+                blur_x: l(*blur_x, *bx, t),
+                blur_y: l(*blur_y, *by, t),
+                strength: l(*strength, *s, t),
+                quality: *quality,
+                angle: l(*angle, *an, t),
+                distance: l(*distance, *d, t),
+                shadow_color: shadow_color.lerp(*sc, t),
+                highlight_color: highlight_color.lerp(*hc, t),
+                side: *side,
+                knockout: *knockout,
+            },
+            (Filter::GradientGlow { blur_x, blur_y, strength, quality, angle, distance, stops, side, knockout }, Filter::GradientGlow { blur_x: bx, blur_y: by, strength: s, angle: an, distance: d, stops: st, .. }) => {
+                Filter::GradientGlow { blur_x: l(*blur_x, *bx, t), blur_y: l(*blur_y, *by, t), strength: l(*strength, *s, t), quality: *quality, angle: l(*angle, *an, t), distance: l(*distance, *d, t), stops: ramp_lerp(stops, st, t), side: *side, knockout: *knockout }
+            }
+            (Filter::GradientBevel { blur_x, blur_y, strength, quality, angle, distance, stops, side, knockout }, Filter::GradientBevel { blur_x: bx, blur_y: by, strength: s, angle: an, distance: d, stops: st, .. }) => {
+                Filter::GradientBevel { blur_x: l(*blur_x, *bx, t), blur_y: l(*blur_y, *by, t), strength: l(*strength, *s, t), quality: *quality, angle: l(*angle, *an, t), distance: l(*distance, *d, t), stops: ramp_lerp(stops, st, t), side: *side, knockout: *knockout }
+            }
+            (Filter::AdjustColor { brightness, contrast, saturation, hue }, Filter::AdjustColor { brightness: b, contrast: c, saturation: s, hue: h }) => Filter::AdjustColor { brightness: l(*brightness, *b, t), contrast: l(*contrast, *c, t), saturation: l(*saturation, *s, t), hue: l(*hue, *h, t) },
+            _ => return None,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

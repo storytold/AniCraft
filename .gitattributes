@@ -16,3 +16,7 @@ scripts/git-hooks/* text eol=lf
 *.tiff binary
 *.DS_Store binary
 *.ico binary
+# XFL corpus media (ADR 0086)
+*.flv binary
+*.aif binary
+*.dat binary

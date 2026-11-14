@@ -97,6 +97,10 @@ prompt they didn't ask for.
   With"), but macOS hands the file to a running app as an Apple Event, not on the command line,
   and winit 0.30 doesn't deliver it; double-clicking a `.anicraft` starts AniCraft without
   opening the file. Needs an open-documents hook in the shell without `unsafe`.
+  **Done in ADR 0062:** the open-documents and quit Apple Events reach the shell through
+  `platform.rs`, at launch and while running, and open through the unsaved-changes guard.
+  A test covers Windows' and Linux's command-line hand-over. The Mac-only checks are listed
+  there.
 * A version override for manual release runs (the family's `cargo xtask version set`): AniCraft
   has no `xtask` yet, so the dispatch input was removed; a manual run builds the `Cargo.toml`
   version.

@@ -330,3 +330,71 @@ fn a_cutter_over_a_curve_cuts_exact_pieces() {
     assert!(near(inside * 4.0, all, 1.0), "{inside} of {all}");
     assert_eq!(m.fills.len(), 2);
 }
+
+// ----- union and intersection (ADR 0080) --------------------------------------------------------
+
+/// Two overlapping squares: the union covers 10² + 10² − 5·5, and the even-odd area of the
+/// joined path agrees (no overlapping loops).
+#[test]
+fn union_of_overlapping_squares() {
+    let (a, b) = (rect(0.0, 0.0, 10.0, 10.0), rect(5.0, 5.0, 10.0, 10.0));
+    let u = union(&[(&a, FillRule::NonZero), (&b, FillRule::NonZero)]).expect("merges");
+    assert!((area(&u) - 175.0).abs() < 0.05, "{}", area(&u));
+    assert!(u.contains(Vec2::new(12.0, 12.0), &crate::Affine::IDENTITY, FillRule::EvenOdd));
+    assert!(u.contains(Vec2::new(7.0, 7.0), &crate::Affine::IDENTITY, FillRule::EvenOdd), "the overlap is covered once");
+    assert!(!u.contains(Vec2::new(12.0, 2.0), &crate::Affine::IDENTITY, FillRule::EvenOdd));
+    assert!(union(&[]).expect("nothing to merge").is_empty());
+}
+
+/// A bar across a square keeps only the part inside it; a disc inside a square with a hole
+/// loses the hole.
+#[test]
+fn intersect_clips_to_the_region() {
+    let bar = rect(-20.0, 4.0, 60.0, 2.0);
+    let square = rect(0.0, 0.0, 10.0, 10.0);
+    let clipped = intersect(&bar, FillRule::NonZero, &square).expect("merges");
+    assert!((area(&clipped) - 20.0).abs() < 0.05, "{}", area(&clipped));
+    // Nothing in common.
+    let far = rect(100.0, 100.0, 5.0, 5.0);
+    assert!(intersect(&far, FillRule::NonZero, &square).expect("merges").is_empty());
+    // A ring (square with a square hole, even-odd) clipping a square that covers it all.
+    let mut ring = rect(0.0, 0.0, 30.0, 30.0);
+    ring.cmds.extend(rect(10.0, 10.0, 10.0, 10.0).cmds);
+    let cover = rect(-5.0, -5.0, 40.0, 40.0);
+    let inside = intersect(&cover, FillRule::NonZero, &ring).expect("merges");
+    assert!((area(&inside) - 800.0).abs() < 0.1, "{}", area(&inside));
+    assert!(!inside.contains(Vec2::new(15.0, 15.0), &crate::Affine::IDENTITY, FillRule::EvenOdd), "the hole stays empty");
+    // A circle's quarter: exact to the curve.
+    let disc = Path::ellipse(0.0, 0.0, 10.0, 10.0);
+    let quarter = intersect(&disc, FillRule::NonZero, &rect(0.0, 0.0, 20.0, 20.0)).expect("merges");
+    let want = std::f32::consts::PI * 100.0 / 4.0;
+    assert!((area(&quarter) - want).abs() < want * 0.002, "{} vs {want}", area(&quarter));
+}
+
+#[test]
+fn stroke_pieces_say_which_stretch_of_their_path_they_run_along() {
+    // A line from x 0 to 100, crossed by another at x 30 (crossings start new pieces): its two
+    // pieces run along positions 1.0..1.3 and 1.3..2.0 (command 1 draws it).
+    let a = Path::line(Vec2::new(0.0, 0.0), Vec2::new(100.0, 0.0));
+    let b = Path::line(Vec2::new(30.0, -50.0), Vec2::new(30.0, 50.0));
+    let m = run(&[stroked(&a, None, 1), stroked(&b, None, 2)]);
+    let mut spans: Vec<[f64; 2]> = m.strokes.iter().filter(|p| p.item == 0).flat_map(|p| p.spans.clone()).collect();
+    spans.sort_by(|x, y| x[0].min(x[1]).total_cmp(&y[0].min(y[1])));
+    assert_eq!(spans.len(), 2, "{m:?}");
+    let lo = |s: [f64; 2]| s[0].min(s[1]);
+    let hi = |s: [f64; 2]| s[0].max(s[1]);
+    assert!((lo(spans[0]) - 1.0).abs() < 1e-6 && (hi(spans[0]) - 1.3).abs() < 1e-3, "{spans:?}");
+    assert!((lo(spans[1]) - 1.3).abs() < 1e-3 && (hi(spans[1]) - 2.0).abs() < 1e-6, "{spans:?}");
+    // A polyline uncut keeps one span over all its segments, and fills carry none.
+    let mut z = Path::new();
+    z.move_to(Vec2::new(0.0, 0.0));
+    z.line_to(Vec2::new(50.0, 0.0));
+    z.cubic_to(Vec2::new(70.0, 0.0), Vec2::new(90.0, 5.0), Vec2::new(100.0, 20.0));
+    let r = rect(200.0, 0.0, 10.0, 10.0);
+    let m = run(&[stroked(&z, None, 1), fill(&r, 3)]);
+    assert_eq!(m.strokes.len(), 1);
+    let sp = &m.strokes[0].spans;
+    assert_eq!(sp.len(), 1, "{sp:?}");
+    assert!((lo(sp[0]) - 1.0).abs() < 1e-9 && (hi(sp[0]) - 3.0).abs() < 1e-9, "{sp:?}");
+    assert!(m.fills.iter().all(|f| f.spans.is_empty()));
+}

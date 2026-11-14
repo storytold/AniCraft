@@ -42,9 +42,11 @@ fn every_layout_a_writer_uses_reads_the_same() {
     for v in pack::VARIANTS {
         let z = pack::pack(&files, v);
         let a = Archive::open(&z).unwrap_or_else(|e| panic!("{}: {e}", v.name));
-        assert_eq!(a.counts().0, 3 + usize::from(v.mimetype), "{}", v.name);
+        assert_eq!(a.counts().0, 3 + usize::from(v.mimetype) + 2 * usize::from(v.macosx), "{}", v.name);
+        // The zip layer reads paths as they are; the importer finds a top folder (ADR 0086).
+        let top = v.top.map(|t| format!("{t}/")).unwrap_or_default();
         for (path, body) in &files {
-            assert_eq!(a.read(path).unwrap_or_else(|e| panic!("{}: {e}", v.name)).as_deref(), Some(body.as_slice()), "{}: {path}", v.name);
+            assert_eq!(a.read(&format!("{top}{path}")).unwrap_or_else(|e| panic!("{}: {e}", v.name)).as_deref(), Some(body.as_slice()), "{}: {path}", v.name);
         }
     }
 }
@@ -281,4 +283,35 @@ fn errors_read_as_sentences() {
         assert!(s.len() > 12 && !s.contains("{") && s.chars().next().is_some_and(|c| !c.is_uppercase() || c == 'A'), "{s}");
     }
     assert_eq!(ZipError::TooMuch.to_string(), "the archive asks for more than 1024 MB in all");
+}
+
+/// ADR 0086: a self-extracting archive (a program before the zip data) reads the same whether
+/// its offsets count from the zip data or from the file's start, and the stub really does move
+/// them in the first case.
+#[test]
+fn a_stub_before_the_archive_is_found_past() {
+    let files: std::collections::BTreeMap<String, Vec<u8>> = [("DOMDocument.xml", "<DOMDocument/>"), ("LIBRARY/a.xml", "<DOMSymbolItem/>")].iter().map(|(p, b)| (p.to_string(), b.as_bytes().to_vec())).collect();
+    let stub = pack::stub_bytes().len();
+    for zip64 in [false, true] {
+        let base = pack::Variant { name: "", zip64, ..pack::VARIANTS[0] };
+        for stub_kind in [pack::Stub::Shifted, pack::Stub::Adjusted] {
+            let z = pack::pack(&files, &pack::Variant { stub: stub_kind, ..base });
+            let a = Archive::open(&z).unwrap_or_else(|e| panic!("{stub_kind:?}, ZIP64 {zip64}: {e}"));
+            assert_eq!(a.read("LIBRARY/a.xml").unwrap().unwrap(), b"<DOMSymbolItem/>");
+        }
+        if !zip64 {
+            // The plain end record's directory offset counts from the zip data: past the stub.
+            let z = pack::pack(&files, &pack::Variant { stub: pack::Stub::Shifted, ..base });
+            let end = z.len() - 22;
+            let stated = u32::from_le_bytes(z[end + 16..end + 20].try_into().unwrap()) as usize;
+            assert_eq!(&z[stated + stub..stated + stub + 4], b"PK\x01\x02");
+        }
+    }
+    // A stub and a directory that doesn't end where the end record begins: nothing to correct
+    // by, so refused readably rather than guessed at.
+    let mut z = pack::pack(&files, &pack::Variant { stub: pack::Stub::Shifted, ..pack::VARIANTS[0] });
+    let end = z.len() - 22;
+    z.splice(end..end, *b"junk");
+    let e = Archive::open(&z).err().unwrap();
+    assert!(matches!(e, ZipError::DamagedEntry(..) | ZipError::Damaged(_)), "{e}");
 }

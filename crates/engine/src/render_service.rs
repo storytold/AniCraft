@@ -94,14 +94,48 @@ impl FrameJob {
 }
 
 /// A stage picture's frame with the open symbol in front composed by `skin`: the timelines around
-/// it as they are, then the symbol's frames, each layer's onion frames under its artwork.
+/// it as they are, then the symbol's frames, each layer's onion frames under its artwork. With
+/// onion skin on (not Edit Multiple Frames), the timeline the symbol was opened from shows its
+/// own onion frames too, dimmed with it (ADR 0061).
 pub fn display_list_inside(doc: &Document, frame: u32, front: &Front, skin: &OnionSkin) -> DisplayList {
     let (scene, local) = doc.locate(frame);
-    let mut around = doc.timeline(scene).clone();
-    around.layers.retain(|l| l.id != front.layer);
-    let mut dl = anicraft_doc::evaluate_timeline(doc, &around, local);
     let tl = &front.timeline;
-    dl.append(crate::onion::compose_timeline(tl, front.frame, Some(skin), |f| anicraft_doc::evaluate_timeline_at(doc, tl, f, front.at)));
+    let parent = front.parent.as_ref().filter(|_| skin.ghosts && !skin.edit_multiple);
+    let mut dl = DisplayList::default();
+    // Back to front: the picture's layers from the bottom up, each its own timeline.
+    for l in doc.timeline(scene).layers.iter().rev() {
+        if l.id == front.layer {
+            dl.append(crate::onion::compose_timeline(tl, front.frame, Some(skin), |f| anicraft_doc::evaluate_timeline_at(doc, tl, f, front.at)));
+        } else if let Some(p) = parent.filter(|p| p.layer == l.id) {
+            dl.append(parent_onion(doc, p, front, skin));
+        } else {
+            dl.append(anicraft_doc::evaluate_timeline(doc, &anicraft_doc::Timeline { layers: vec![l.clone()] }, local));
+        }
+    }
+    dl
+}
+
+/// The timeline around an open symbol with its onion frames, all at its dim opacity. Markers that
+/// follow the playhead reach as many frames from the parent's frame; anchored ones (which name
+/// the symbol's frames) as far as they reach from the symbol's playhead.
+fn parent_onion(doc: &Document, p: &crate::editing::Around, front: &Front, skin: &OnionSkin) -> DisplayList {
+    let mut own = *skin;
+    if skin.anchored() {
+        let (first, last) = skin.range(front.frame, front.timeline.frame_count());
+        own.markers = crate::onion::Markers::Relative { before: front.frame.saturating_sub(first), after: last.saturating_sub(front.frame) };
+    }
+    let composed = crate::onion::compose_timeline(&p.timeline, p.frame, Some(&own), |f| anicraft_doc::evaluate_timeline_at(doc, &p.timeline, f, p.at));
+    // It fades as one, as the dimmed instance it replaces does: everything in a group at `dim`.
+    let alpha = if p.dim.is_finite() { p.dim.clamp(0.0, 1.0) } else { 1.0 };
+    let mut dl = DisplayList::default();
+    dl.groups.push(anicraft_doc::Group { parent: None, alpha, blend: Default::default(), filters: Arc::from(Vec::new()), clip: None });
+    dl.append(composed);
+    for g in dl.groups.iter_mut().skip(1) {
+        g.parent = Some(g.parent.unwrap_or(0));
+    }
+    for it in dl.items.iter_mut().filter(|i| i.masks.is_none()) {
+        it.group = Some(it.group.unwrap_or(0));
+    }
     dl
 }
 

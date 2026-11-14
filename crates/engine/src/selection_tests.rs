@@ -206,7 +206,7 @@ fn properties_edits_apply_to_each_layer() {
     run(&mut s, "element.set_transform", json!({"rotation": 45}));
     for (l, id) in [(top, a), (bottom, b)] {
         let e = element(&s, l, id).unwrap();
-        assert_eq!(e.color.alpha, 0.5);
+        assert_eq!(e.color, anicraft_doc::ColorEffect::Alpha(0.5));
         assert_eq!(e.name, "both");
         assert!((e.transform.decompose().rotation.to_degrees() - 45.0).abs() < 1e-3);
         let ElementKind::Shape(sh) = &e.kind else { panic!() };
@@ -373,6 +373,41 @@ fn break_apart_works_on_each_layer() {
     assert_eq!(v["created"], 2, "{v}");
     assert!(s.elements_on(top).iter().chain(s.elements_on(bottom).iter()).all(|e| matches!(e.kind, ElementKind::Shape(_))));
     assert_eq!(s.selected_layers(), vec![top, bottom]);
+}
+
+/// #253: a drawing object (Object Drawing) breaks apart into raw shapes that merge with the raw
+/// drawing they touch, so it can be edited as a merged shape again; one undo step brings the
+/// object back.
+#[test]
+fn break_apart_turns_a_drawing_object_into_raw_shapes() {
+    let mut s = Session::default();
+    s.style.object_drawing = false;
+    run(&mut s, "draw.rect", json!({"x": 0, "y": 0, "w": 100, "h": 100, "fill": "#00ff00", "stroke": null}));
+    let raw = s.visible_elements().len();
+    let obj = el_id(&run(&mut s, "draw.rect", json!({"x": 50, "y": 50, "w": 100, "h": 100, "fill": "#ff0000", "stroke": null, "object": true})));
+    let squiggle = el_id(&run(&mut s, "draw.freehand", json!({"points": [[300, 0], [320, 30], [340, 0], [360, 30]], "object": true})));
+    let shapes = |s: &Session| -> Vec<(ElementId, bool)> {
+        s.visible_elements().iter().filter_map(|e| match &e.kind {
+            ElementKind::Shape(sh) => Some((e.id, sh.merge)),
+            _ => None,
+        }).collect()
+    };
+    assert!(shapes(&s).iter().filter(|(id, _)| [obj, squiggle].contains(id)).all(|(_, m)| !m), "drawn as objects");
+    let before = s.doc.clone();
+    let steps = s.history_len();
+    run(&mut s, "element.select", json!({"ids": [obj.0, squiggle.0]}));
+    let v = run(&mut s, "modify.break_apart", json!({}));
+    assert!(v["created"].as_u64().unwrap() >= 2, "{v}");
+    assert!(shapes(&s).iter().all(|(_, m)| *m), "every shape is raw now: {:?}", shapes(&s));
+    assert!(!shapes(&s).iter().any(|(id, _)| *id == obj), "the object merged into the drawing");
+    assert!(s.visible_elements().len() > raw + 1, "the red square cut the green one");
+    assert!(!s.selection.is_empty(), "what came out of it is selected");
+    assert_eq!(s.history_len(), steps + 1);
+    s.undo().unwrap();
+    assert!(s.doc == before, "one undo brings the objects back");
+    // Nothing to break apart: an error, not a no-op step.
+    run(&mut s, "edit.deselect", json!({}));
+    assert!(s.execute("modify.break_apart", &json!({})).is_err());
 }
 
 // ----- the marquee across layers with raw parts (ADR 0041) ------------------------------------
@@ -561,4 +596,15 @@ fn clicking_a_layer_name_selects_its_artwork() {
     run(&mut s, "timeline.goto", json!({"frame": 5}));
     run(&mut s, "layer.select", json!({"layer": bottom.0, "select": true}));
     assert!(s.selection.is_empty());
+}
+
+#[test]
+fn select_with_toggle_takes_one_out_and_puts_it_back_across_layers() {
+    // Shift+Space on a stage element (ADR 0064): the others stay selected, on either layer.
+    let (mut s, top, bottom, a, b) = two_layers();
+    run(&mut s, "element.select", json!({"ids": [b.0], "toggle": true}));
+    assert!(s.selection.contains(top, a) && !s.selection.contains(bottom, b));
+    run(&mut s, "element.select", json!({"ids": [b.0], "toggle": true}));
+    assert!(s.selection.contains(top, a) && s.selection.contains(bottom, b));
+    assert!(s.execute("element.select", &json!({"ids": [b.0], "toggle": "yes"})).is_err(), "toggle is a bool");
 }

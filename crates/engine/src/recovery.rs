@@ -358,7 +358,7 @@ impl SessionLock {
 // ----- background writer ------------------------------------------------------------------------
 
 enum Job {
-    Write { doc: Document, meta: Box<RecoveryMeta>, tag: u64 },
+    Write { doc: Box<Document>, meta: Box<RecoveryMeta>, tag: u64 },
     Clear { tag: u64 },
 }
 
@@ -412,7 +412,7 @@ impl Autosaver {
     /// Queues a write of `doc` (a cheap snapshot). Returns its tag.
     pub fn write(&mut self, doc: Document, original: Option<&Path>) -> u64 {
         let meta = RecoveryMeta::describe(self.id(), &doc, original);
-        self.send(|tag| Job::Write { doc, meta: Box::new(meta), tag })
+        self.send(|tag| Job::Write { doc: Box::new(doc), meta: Box::new(meta), tag })
     }
 
     /// Queues removal of this session's recovery copy (after a save, or when the work is gone).

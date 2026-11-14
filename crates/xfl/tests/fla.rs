@@ -102,6 +102,46 @@ fn an_old_binary_fla_says_what_to_do() {
     assert_eq!(e, "not a zip archive (no end-of-directory record)");
 }
 
+/// #226: one damaged part the document can do without (a bitmap's file, a library symbol) is
+/// left out and reported, and everything else opens, as it did before AniCraft read those
+/// parts; damage to `DOMDocument.xml` still refuses the file.
+#[test]
+fn damaged_parts_are_left_out_not_the_whole_document() {
+    let fonts = no_fonts();
+    let open = |case: &str, damage: &dyn Fn(&mut pack::Raw) -> bool| {
+        let files = pack::package(&corpus().join(case));
+        let (whole, _) = from_folder(&files, &fonts);
+        let mut entries = pack::entries(&files, &pack::VARIANTS[0]);
+        let hit = entries.iter_mut().map(damage).filter(|d| *d).count();
+        assert_eq!(hit, 1, "{case}: one entry damaged");
+        (whole, import_fla_with_fonts(&pack::write(&entries, false), &fonts))
+    };
+    let named = |e: &pack::Raw, f: &dyn Fn(&str) -> bool| f(&String::from_utf8_lossy(&e.name));
+
+    // A bitmap whose bytes fail their checksum.
+    let (whole, got) = open("bitmaps", &|e| named(e, &|n| n.ends_with("checker.png")) && e.crc.replace(1).is_none());
+    let (doc, report) = got.expect("the document opens without the damaged bitmap");
+    assert_eq!(doc.bitmaps.len() + 1, whole.bitmaps.len(), "only the damaged bitmap is left out");
+    assert_eq!(report.skipped.get("bitmaps whose files couldn't be read"), Some(&1), "{:?}", report.skipped);
+    assert!(report.summary().contains("bitmaps whose files couldn't be read"), "{}", report.summary());
+
+    // A library symbol whose file is cut short (malformed XML), and one that lies about its size.
+    for (how, damage) in [
+        ("malformed", &(|e: &mut pack::Raw| named(e, &|n| n.ends_with("Dot.xml")) && { e.body.truncate(e.body.len() / 2); true }) as &dyn Fn(&mut pack::Raw) -> bool),
+        ("a lying size", &|e: &mut pack::Raw| named(e, &|n| n.ends_with("Dot.xml")) && e.size.replace(3).is_none()),
+    ] {
+        let (whole, got) = open("symbols", damage);
+        let (doc, report) = got.unwrap_or_else(|e| panic!("{how}: the document opens without the damaged symbol: {e}"));
+        assert_eq!(doc.library.len() + 1, whole.library.len(), "{how}");
+        assert_eq!(report.skipped.get("library files that couldn't be read"), Some(&1), "{how}: {:?}", report.skipped);
+        assert_eq!(doc.scenes.len(), whole.scenes.len(), "{how}");
+    }
+
+    // The document itself damaged: refused, with a readable reason.
+    let (_, got) = open("symbols", &|e| named(e, &|n| n == "DOMDocument.xml") && e.crc.replace(1).is_none());
+    assert!(got.err().unwrap().to_string().contains("checksum"));
+}
+
 /// A small deterministic generator (xorshift64*).
 struct Rng(u64);
 impl Rng {
@@ -143,14 +183,16 @@ fn survive(fla: &[u8], fonts: &Fonts, what: &str, errors: &mut BTreeMap<String, 
     }
 }
 
-/// Offsets of every central record in `z` (found through the end record, or its ZIP64 form).
-fn central_records(z: &[u8]) -> Vec<usize> {
+/// Offsets of every central record in `z` (found through the end record, or its ZIP64 form),
+/// whose offsets count from `shift` bytes into it (a self-extracting stub's length).
+fn central_records(z: &[u8], shift: usize) -> Vec<usize> {
     let end = z.len() - 22;
     let mut at = u32::from_le_bytes(z[end + 16..end + 20].try_into().unwrap()) as usize;
     if at == u32::MAX as usize {
-        let record = u64::from_le_bytes(z[end - 12..end - 4].try_into().unwrap()) as usize;
+        let record = u64::from_le_bytes(z[end - 12..end - 4].try_into().unwrap()) as usize + shift;
         at = u64::from_le_bytes(z[record + 48..record + 56].try_into().unwrap()) as usize;
     }
+    at += shift;
     let mut out = Vec::new();
     let mut i = at;
     while z.get(i..i + 4) == Some(&[0x50, 0x4b, 1, 2]) {
@@ -175,10 +217,14 @@ fn hostile_fla_archives_never_panic_and_fail_readably() {
     let mut variants = 0;
     for case in cases() {
         let files = pack::package(&corpus().join(&case));
-        for v in [&pack::VARIANTS[0], &pack::VARIANTS[7]] {
+        // As Animate writes it, ZIP64, and the new layouts (ADR 0086): a top folder, and a
+        // self-extracting stub whose offsets count from the zip data.
+        let fuzzed = ["as Animate writes it (mimetype first, deflated)", "ZIP64", "inside a top folder, with __MACOSX beside it", "self-extracting, offsets from the zip data", "self-extracting ZIP64, offsets from the zip data"];
+        for v in pack::VARIANTS.iter().filter(|v| fuzzed.contains(&v.name)) {
             let z = pack::pack(&files, v);
             let mut rng = Rng(0x9E37_79B9_7F4A_7C15 ^ (case.len() as u64) << 20 ^ z.len() as u64);
-            let records = central_records(&z);
+            let shift = if v.stub == pack::Stub::Shifted { pack::stub_bytes().len() } else { 0 };
+            let records = central_records(&z, shift);
             assert!(records.len() >= files.len(), "{case}");
             // Header fields at edge values: (offset in the central record, width).
             const FIELDS: &[(usize, usize)] = &[(8, 2), (10, 2), (16, 4), (20, 4), (24, 4), (28, 2), (30, 2), (32, 2), (34, 2), (42, 4)];
@@ -192,7 +238,7 @@ fn hostile_fla_archives_never_panic_and_fail_readably() {
                     }
                 }
                 // The local header's lengths too.
-                let local = u32::from_le_bytes(z[rec + 42..rec + 46].try_into().unwrap()) as usize;
+                let local = u32::from_le_bytes(z[rec + 42..rec + 46].try_into().unwrap()) as usize + shift;
                 for (off, value) in [(26usize, 0xffffu16), (28, 0xffff), (28, 0), (18, 0xffff), (22, 0)] {
                     let mut t = z.clone();
                     if let Some(f) = t.get_mut(local + off..local + off + 2) {
@@ -223,6 +269,9 @@ fn hostile_fla_archives_never_panic_and_fail_readably() {
         // Built hostile: names that leave the package, duplicates, overlaps, lying sizes.
         let mut entries = pack::entries(&files, &pack::VARIANTS[0]);
         let last = entries.len() - 1;
+        // Damage to the document itself refuses the archive; damage to an optional part (a
+        // bitmap, a symbol) leaves only that part out (`damaged_parts_are_left_out_…`).
+        let doc = entries.iter().position(|e| e.name == b"DOMDocument.xml").unwrap();
         let edits: Vec<(&str, Edit)> = vec![
             ("a .. name", Box::new(move |e| e[last].name = b"LIBRARY/../../../x.xml".to_vec())),
             ("an absolute name", Box::new(move |e| e[last].name = b"/etc/x.xml".to_vec())),
@@ -239,9 +288,9 @@ fn hostile_fla_archives_never_panic_and_fail_readably() {
                 d.share = Some(1);
                 e.push(d);
             })),
-            ("a lying size", Box::new(|e| e[1].size = Some(3))),
-            ("a lying checksum", Box::new(|e| e[1].crc = Some(1))),
-            ("a ratio bomb", Box::new(|e| e[1].size = Some(200 << 20))),
+            ("a lying size", Box::new(move |e| e[doc].size = Some(3))),
+            ("a lying checksum", Box::new(move |e| e[doc].crc = Some(1))),
+            ("a ratio bomb", Box::new(move |e| e[doc].size = Some(200 << 20))),
             ("deep folders", Box::new(|e| e[1].name = "d/".repeat(200).into_bytes())),
         ];
         for (what, edit) in &edits {

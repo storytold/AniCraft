@@ -228,6 +228,9 @@ fn plugins_may_drive_the_camera() {
     assert!(crate::cmds_plugin::plugin_may_call("camera.set").is_ok());
     assert!(crate::cmds_plugin::plugin_may_call("camera.add").is_ok());
     assert!(crate::cmds_plugin::plugin_may_call("layer.set_depth").is_ok());
+    for id in ["layer.remove_depth_key", "layer.set_attached", "layer.depths"] {
+        assert!(crate::cmds_plugin::plugin_may_call(id).is_ok(), "{id}");
+    }
 }
 
 /// Every command with hostile params while the scene has an animated camera: Ok or Err, never
@@ -242,6 +245,11 @@ fn panic_hunt_with_a_camera() {
         json!({"x": 1e7, "y": -1e7, "zoom": 5, "zoom_by": 1e7, "reset": true, "frame": 99_999, "layer": 1}),
         json!({"layers": [1, 2, 3], "from": 0, "to": 100, "by": 1, "layer_by": 1, "frame": 0}),
         json!({"layer": 2, "type": "camera", "depth": 10000, "count": 50}),
+        // Depth keys and attachment (ADR 0082): huge, negative, overflowing and wrong-typed.
+        json!({"depth": -1e39, "key": true, "frame": 4_000_000_000u64, "attached": "x"}),
+        json!({"depth": 1e39, "key": "yes", "layer": u64::MAX, "view": "camera", "x": 1e30, "y": -1e30}),
+        json!({"depth": -500, "key": true, "frame": 0, "attached": true, "style": "advanced", "red_multiplier": -100, "blue_offset": 255}),
+        json!({"depth": 10000, "key": true, "frame": 19, "style": "alpha", "alpha": 0, "brightness": 1e9, "view": "nowhere"}),
     ];
     let mut base = stage_with(&[(95.0, 45.0, 10.0, 10.0)]);
     run(&mut base, "camera.add", json!({}));
@@ -261,4 +269,159 @@ fn panic_hunt_with_a_camera() {
     }
     let tl = s.doc.timeline(0);
     assert!(tl.layers.iter().skip(1).all(|l| l.kind != LayerKind::Camera), "at most one camera, on top");
+}
+
+// ----- ADR 0082: depth over time, perspective, attaching layers, colour, editing through it ---
+
+/// A stage with a 10 × 10 square on a layer behind (depth `far`) and one on the stage plane,
+/// both at (95, 45), and a camera. Returns (session, far layer, near layer).
+fn two_planes(far: f32) -> (Session, anicraft_doc::LayerId, anicraft_doc::LayerId) {
+    let mut s = stage_with(&[(95.0, 45.0, 10.0, 10.0)]);
+    let back = s.layer;
+    run(&mut s, "layer.set_depth", json!({"depth": far}));
+    run(&mut s, "layer.new", json!({}));
+    let near = s.layer;
+    run(&mut s, "draw.rect", json!({"x": 95, "y": 45, "w": 10, "h": 10, "fill": "#000000", "stroke": null}));
+    run(&mut s, "camera.add", json!({}));
+    (s, back, near)
+}
+
+/// The x of the left edge of the black run on row `y` starting the search at `from`.
+fn left_edge(s: &Session, frame: u32, y: u32, from: u32) -> Option<u32> {
+    (from..200).find(|&x| black(s, frame, x, y))
+}
+
+#[test]
+fn depth_keys_tween_the_parallax_and_undo_in_one_step() {
+    let (mut s, back, _) = two_planes(0.0);
+    run(&mut s, "layer.set_depth", json!({"layer": back.0, "depth": 1000, "key": true, "frame": 10}));
+    let l = s.doc.timeline(0).layer(back).unwrap().clone();
+    assert_eq!(l.depth_keys.len(), 2, "frame 0 keeps the depth it had");
+    assert_eq!(l.depth_at(5), 500.0, "the midpoint");
+    // Keyed from now on: a plain set at the playhead adds a key there.
+    s.set_frame(15);
+    run(&mut s, "layer.set_depth", json!({"layer": back.0, "depth": 3000}));
+    assert_eq!(s.doc.timeline(0).layer(back).unwrap().depth_keys.len(), 3);
+    run(&mut s, "edit.undo", json!({}));
+    assert_eq!(s.doc.timeline(0).layer(back).unwrap().depth_keys.len(), 2);
+    // A 40 px pan: at frame 10 the far square moves 20 px (75..85); the near one 40 (55..65).
+    let cam = camera_id(&s);
+    run(&mut s, "timeline.insert_keyframe", json!({"layer": cam.0, "frame": 10}));
+    run(&mut s, "camera.set", json!({"frame": 0, "dx": 40}));
+    run(&mut s, "camera.set", json!({"frame": 10, "dx": 40}));
+    assert_eq!(left_edge(&s, 10, 50, 0), Some(55));
+    assert_eq!(left_edge(&s, 10, 50, 66), Some(75));
+    // Frame 5 (depth 500): moved 40 · 1000 / 1500 = 26.67 px, to 68.33: pixel 69 is fully in.
+    assert!(black(&s, 5, 69, 50) && !black(&s, 5, 67, 50));
+    // Removing keys: the last leaves the depth it had there.
+    run(&mut s, "layer.remove_depth_key", json!({"layer": back.0, "frame": 10}));
+    assert!(s.execute("layer.remove_depth_key", &json!({"layer": back.0, "frame": 10})).is_err());
+    run(&mut s, "layer.remove_depth_key", json!({"layer": back.0, "frame": 0}));
+    let l = s.doc.timeline(0).layer(back).unwrap();
+    assert!(l.depth_keys.is_empty() && l.depth == 0.0);
+    // `key: false` makes it one value again.
+    run(&mut s, "layer.set_depth", json!({"layer": back.0, "depth": 200, "key": true, "frame": 3}));
+    run(&mut s, "layer.set_depth", json!({"layer": back.0, "depth": 50, "key": false}));
+    let l = s.doc.timeline(0).layer(back).unwrap();
+    assert!(l.depth_keys.is_empty() && l.depth == 50.0);
+}
+
+#[test]
+fn a_camera_zoom_scales_deeper_layers_less() {
+    // Zoom 200 % about the centre (100, 50): the stage-plane square doubles (90..110); one
+    // 1000 px back grows by 4/3 (93.33..106.67).
+    let (mut s, _, _) = two_planes(1000.0);
+    run(&mut s, "camera.set", json!({"zoom": 200}));
+    let dl = anicraft_doc::evaluate(&s.doc, 0);
+    let scales: Vec<f32> = dl.items.iter().map(|i| i.transform.mean_scale()).collect();
+    assert!((scales[0] - 4.0 / 3.0).abs() < 1e-4 && (scales[1] - 2.0).abs() < 1e-5, "{scales:?}");
+    assert_eq!(left_edge(&s, 0, 50, 0), Some(90));
+}
+
+#[test]
+fn attached_layers_stay_on_screen_while_the_camera_moves() {
+    let (mut s, back, near) = two_planes(0.0);
+    assert_eq!(run(&mut s, "layer.set_attached", json!({"layer": near.0}))["attached"], true, "toggles on");
+    run(&mut s, "camera.set", json!({"dx": 40, "zoom": 150, "rotation": 20}));
+    // The attached square is exactly where it was drawn.
+    let dl = anicraft_doc::evaluate(&s.doc, 0);
+    let it = dl.items.iter().find(|i| i.layer == near).unwrap();
+    assert_eq!(it.transform, anicraft_doc::evaluate_scene(&s.doc, 0, 0).items.iter().find(|i| i.layer == near).unwrap().transform);
+    assert!(black(&s, 0, 96, 46) && black(&s, 0, 104, 54));
+    assert!(dl.items.iter().find(|i| i.layer == back).unwrap().transform != it.transform);
+    // Listed, and refused on the camera layer and inside a symbol.
+    let v = run(&mut s, "layer.depths", json!({}));
+    assert_eq!(v["camera"], true);
+    assert!(v["layers"].as_array().unwrap().iter().any(|r| r["layer"] == near.0 && r["attached"] == true));
+    assert!(s.execute("layer.set_attached", &json!({"layer": camera_id(&s).0})).is_err());
+    run(&mut s, "edit.undo", json!({}));
+    run(&mut s, "edit.undo", json!({}));
+    assert!(!s.doc.timeline(0).layer(near).unwrap().attached);
+}
+
+#[test]
+fn layer_depths_list_nearest_first_ties_in_timeline_order() {
+    let mut s = stage_with(&[(0.0, 0.0, 5.0, 5.0)]);
+    let a = s.layer;
+    run(&mut s, "layer.new", json!({}));
+    let b = s.layer;
+    run(&mut s, "layer.new", json!({}));
+    let c = s.layer;
+    run(&mut s, "layer.set_depth", json!({"layer": a.0, "depth": -100}));
+    run(&mut s, "layer.set_depth", json!({"layer": c.0, "depth": 400}));
+    let v = run(&mut s, "layer.depths", json!({}));
+    let ids: Vec<u64> = v["layers"].as_array().unwrap().iter().map(|r| r["layer"].as_u64().unwrap()).collect();
+    assert_eq!(ids, [a.0, b.0, c.0]);
+    // Ties: b and a at 0 go top first (b is above a).
+    run(&mut s, "layer.set_depth", json!({"layer": a.0, "depth": 0}));
+    let v = run(&mut s, "layer.depths", json!({}));
+    let ids: Vec<u64> = v["layers"].as_array().unwrap().iter().map(|r| r["layer"].as_u64().unwrap()).collect();
+    assert_eq!(ids, [b.0, a.0, c.0]);
+}
+
+#[test]
+fn camera_colour_effects_reach_the_pixels() {
+    let mut s = stage_with(&[(95.0, 45.0, 10.0, 10.0)]);
+    run(&mut s, "camera.add", json!({}));
+    // Brightness +50 %: white stays white, black becomes mid grey (0.5).
+    let v = run(&mut s, "camera.set", json!({"brightness": 50}));
+    assert_eq!(v["color_effect"]["style"], "brightness");
+    let px = render_frame(&s.doc, 0, 1.0).unwrap();
+    let p = px.pixel(100, 50).unwrap();
+    assert!((p[0] - 0.5).abs() < 0.01 && (p[2] - 0.5).abs() < 0.01, "{p:?}");
+    // Advanced: red × 0 and blue + 255 turn white blue-ish and black blue.
+    run(&mut s, "camera.set", json!({"style": "none"}));
+    run(&mut s, "camera.set", json!({"style": "advanced", "red_multiplier": 0, "blue_offset": 255}));
+    let px = render_frame(&s.doc, 0, 1.0).unwrap();
+    let sq = px.pixel(100, 50).unwrap();
+    assert!(sq[0] < 0.01 && sq[1] < 0.01 && sq[2] > 0.99, "the square: {sq:?}");
+    // The camera has no opacity.
+    assert!(s.execute("camera.set", &json!({"alpha_multiplier": 50})).is_err());
+    assert!(s.execute("camera.set", &json!({"style": "alpha"})).is_err());
+    let info = run(&mut s, "camera.info", json!({}));
+    assert_eq!(info["color_effect"]["style"], "advanced");
+    // A colour change alone keys inside a camera tween like any other edit, and round-trips.
+    let back = crate::format::from_json(&crate::format::to_json(&s.doc).unwrap()).unwrap();
+    assert_eq!(back, s.doc);
+}
+
+#[test]
+fn picking_through_the_camera_finds_what_the_movie_shows() {
+    // The far square (depth 1000) and the near one start together; a 40 px pan puts the near
+    // one at 55..65 on the picture and the far one at 75..85.
+    let (mut s, back, near) = two_planes(1000.0);
+    run(&mut s, "camera.set", json!({"dx": 40}));
+    assert_eq!(run(&mut s, "element.pick", json!({"x": 80, "y": 50, "view": "camera"}))["layer"], back.0);
+    assert_eq!(run(&mut s, "element.pick", json!({"x": 60, "y": 50, "view": "camera"}))["layer"], near.0);
+    assert!(run(&mut s, "element.pick", json!({"x": 100, "y": 50, "view": "camera"}))["element"].is_null(), "nothing shows there");
+    assert!(s.execute("element.pick", &json!({"x": 1, "y": 1, "view": "sideways"})).is_err());
+    // Dragging maps the pointer back through the layer's view: 10 picture px on the far layer
+    // are 10 stage px at zoom 100 % (a pan keeps sizes).
+    let v = s.camera_view(back).unwrap();
+    let d = v.inverse().unwrap().apply_vector(anicraft_geom::Vec2::new(10.0, 0.0));
+    assert!((d.x - 10.0).abs() < 1e-4);
+    run(&mut s, "camera.set", json!({"zoom": 200}));
+    let v = s.camera_view(near).unwrap();
+    let d = v.inverse().unwrap().apply_vector(anicraft_geom::Vec2::new(10.0, 0.0));
+    assert!((d.x - 5.0).abs() < 1e-4, "{d:?}");
 }

@@ -23,6 +23,22 @@ Sound output (ADR 0020) uses `cpal`, which on Linux and the BSDs builds against 
 (Arch, FreeBSD). `cargo build --no-default-features` leaves sound output out (playback is
 silent; import, waveforms and audio export still work). Tests never open an audio device.
 
+### The user guide
+
+The user guide is Markdown in `docs/guide/` (ADR 0069); `crates/guide` bundles it as HTML for
+Help › User Guide, and `cargo run -p anicraft-cli -- guide --out <folder>` writes the pages.
+`cargo test` checks every link, anchor and picture and that every chapter is reachable from
+`index.md`; a new chapter needs its line in `PAGES` (`crates/guide/src/lib.rs`) and a link
+from the contents. The command and shortcut references in `docs/guide/reference/` are
+generated: when a command or a default key changes, a test fails until you run
+
+```sh
+ANICRAFT_BLESS_GUIDE=1 cargo test -p anicraft guide_reference
+```
+
+and commit the result. The pictures come from `scripts/guide-shots.sh` (or `.ps1`), which runs
+`--screenshot --open <state> --shot-width 1100`; look at each one before committing it.
+
 ### GPU stage
 
 The stage draws on the graphics card by default (ADR 0032; the shell's `gpu-stage` feature is
@@ -33,6 +49,35 @@ its parity tests run on the graphics card, else on a software adapter (lavapipe;
 skip without either; `ANICRAFT_TEST_GPU=software` forces the software adapter and
 `WGPU_BACKEND=dx12|vulkan|metal` picks the backend. `cargo run --release -p anicraft-gpu
 --example gpu_bench` prints timings and parity.
+
+## CI
+
+Every workflow calls the suite's shared workflows in `storytold/craft-common-actions`, which
+start each job with Harden-Runner and pin actions by SHA.
+
+| Workflow | Runs on | When | What |
+|---|---|---|---|
+| `ci.yml` (CI) | Ubuntu 24.04 (lavapipe for GPU tests) | every PR, every push to `main` | `cargo test --workspace`, clippy |
+| `platforms.yml` (CI (macOS, Windows), ADR 0067) | `macos-latest` (arm64), `windows-latest` (x64) | PRs and pushes to `main` that change more than docs, Markdown or other workflows | `cargo build`, `cargo test --no-fail-fast`, clippy, for the workspace |
+| `web.yml` | Ubuntu | every PR, every push to `main` | wasm32 build, the engine's tests in Node, the web bundle |
+| `freebsd.yml`, `windows-arm64.yml` | FreeBSD VM, Windows ARM64 | nightly / weekly, packaging changes | build and tests; ARM64 MSI install |
+| `sonarcloud.yml`, CodeQL default setup | Ubuntu | every PR | coverage and static analysis |
+
+Measured job times (wall clock, from the job's start to its end):
+
+| Job | 2026-11-12, PR #190 |
+|---|---|
+| Linux gate (`ci.yml`, warm cache) | 6 m 24 s |
+| macOS arm64 leg (first run, no cache) | 16 m 33 s: build 7.5 min, test build 6.0, tests 1.3, clippy 1.2 |
+| Windows x64 leg (first run, no cache) | 28 m 02 s: build 12.0 min, test build 11.1, tests 4.0, clippy 1.8 |
+
+The macOS and Windows legs run in parallel with the Linux gate, so a code PR takes about as
+long as the Windows leg and about 45 more runner-minutes cold (ADR 0067 › Costs).
+
+A superseded PR run is cancelled (each workflow has its own `concurrency` group, so one never
+cancels another); pushes to `main` always run to the end and are the only runs that write the
+dependency caches, so a PR's first run reuses `main`'s. To start the platform legs by hand:
+`gh workflow run platforms.yml --ref <branch>`.
 
 ## Build footprint (biased for disk space, then time)
 

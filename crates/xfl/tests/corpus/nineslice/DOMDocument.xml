@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- AniCraft XFL corpus: nineslice. A rounded panel movie clip with guides for 9-slice scaling
+     (scaleGridLeft/Right/Top/Bottom on its DOMSymbolItem), placed unscaled, scaled both ways
+     and stretched wide: its corners keep their radius, its edges stretch one way and its centre
+     both, and the graphic nested in it scales normally. One more symbol gives only one guide,
+     which isn't usable. Self-authored. -->
+<DOMDocument xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns="http://ns.adobe.com/xfl/2008/" width="320" height="180" frameRate="24" backgroundColor="#F1FAEE">
+  <folders>
+    <DOMFolderItem name="Ui" itemID="00000000-0000-0000-0000-000000000901"/>
+  </folders>
+  <symbols>
+    <Include href="Ui/Panel.xml" itemIcon="1" loadImmediate="false"/>
+    <Include href="Ui/Pip.xml" loadImmediate="false"/>
+    <Include href="Ui/Half.xml" itemIcon="1" loadImmediate="false"/>
+  </symbols>
+  <timelines>
+    <DOMTimeline name="Scene 1">
+      <layers>
+        <DOMLayer name="Panels" color="#4F80FF" current="true" isSelected="true">
+          <frames>
+            <DOMFrame index="0" keyMode="9728">
+              <elements>
+                <DOMSymbolInstance libraryItemName="Ui/Panel">
+                  <matrix><Matrix tx="10" ty="10"/></matrix>
+                </DOMSymbolInstance>
+                <DOMSymbolInstance libraryItemName="Ui/Panel">
+                  <matrix><Matrix a="1.3" d="2" tx="130" ty="10"/></matrix>
+                </DOMSymbolInstance>
+                <DOMSymbolInstance libraryItemName="Ui/Panel">
+                  <matrix><Matrix a="2.8" tx="20" ty="110"/></matrix>
+                </DOMSymbolInstance>
+                <DOMSymbolInstance libraryItemName="Ui/Half">
+                  <matrix><Matrix a="2" d="2" tx="280" ty="20"/></matrix>
+                </DOMSymbolInstance>
+              </elements>
+            </DOMFrame>
+          </frames>
+        </DOMLayer>
+      </layers>
+    </DOMTimeline>
+  </timelines>
+</DOMDocument>

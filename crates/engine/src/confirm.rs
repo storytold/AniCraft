@@ -38,6 +38,10 @@ fn plural(n: usize, word: &str) -> String {
     if n == 1 { format!("1 {word}") } else { format!("{n} {word}s") }
 }
 
+fn swatches(n: usize) -> String {
+    if n == 1 { "1 swatch".into() } else { format!("{n} swatches") }
+}
+
 fn target_layer<'a>(s: &'a Session, p: &Value) -> Option<&'a Layer> {
     let id = p.get("layer").and_then(Value::as_u64).map_or(s.layer, LayerId);
     s.timeline().layer(id)
@@ -98,7 +102,89 @@ pub fn confirmation(s: &Session, id: &str, p: &Value) -> Option<Confirmation> {
                 irreversible: true,
             })
         }
-        "file.new" | "file.new_sample" | "file.open" | "file.recover" if s.is_dirty() => Some(Confirmation {
+        "file.save_as_template" => {
+            let path = crate::cmds_template::target(p).ok()?;
+            crate::vfs::exists(&path).then(|| overwrite(&path, "Saving the template"))
+        }
+        "file.delete_template" => {
+            let path = crate::cmds_template::target(p).ok()?;
+            let name = path.file_stem().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            Some(Confirmation {
+                title: "Delete template?".into(),
+                message: format!("The template “{name}” and its picture will be deleted from your templates. This cannot be undone."),
+                action: "Delete Template".into(),
+                irreversible: true,
+            })
+        }
+        // Brushes of your own live in your preferences, outside undo (ADR 0068).
+        "brush.preset_delete" => {
+            let name = p.get("name").and_then(Value::as_str)?;
+            let i = s.brushes.position(name)?;
+            let name = s.brushes.user().get(i)?.name.clone();
+            Some(Confirmation {
+                title: "Delete brush?".into(),
+                message: format!("The brush “{name}” will be deleted from your brushes. This cannot be undone."),
+                action: "Delete Brush".into(),
+                irreversible: true,
+            })
+        }
+        // Swatches are document data and undoable (ADR 0078): replacing many asks by default.
+        "swatch.export" => {
+            let path = Path::new(p.get("path").and_then(Value::as_str)?);
+            crate::vfs::exists(path).then(|| overwrite(path, "Exporting the swatches"))
+        }
+        "swatch.clear" => {
+            let n = s.doc.swatches.len();
+            (n > 2).then(|| Confirmation {
+                title: "Clear swatches?".into(),
+                message: format!("{} will be removed, leaving black and white. You can undo this.", swatches(n)),
+                action: "Clear Swatches".into(),
+                irreversible: false,
+            })
+        }
+        "swatch.reset" => {
+            let custom = !anicraft_doc::swatch::is_default_set(&s.doc.swatches) && !s.doc.swatches.is_empty();
+            custom.then(|| Confirmation {
+                title: "Load the default swatches?".into(),
+                message: "The document's swatches will be replaced with a new document's set. You can undo this.".into(),
+                action: "Load Default Swatches".into(),
+                irreversible: false,
+            })
+        }
+        "swatch.import" if p.get("replace").and_then(Value::as_bool) == Some(true) && !s.doc.swatches.is_empty() => Some(Confirmation {
+            title: "Replace swatches?".into(),
+            message: format!("The document's {} will be replaced with the file's. You can undo this.", swatches(s.doc.swatches.len())),
+            action: "Replace Swatches".into(),
+            irreversible: false,
+        }),
+        // Filter presets live in your preferences, outside undo (ADR 0091).
+        "filter.preset_delete" => {
+            let name = s.filter_presets.find(p.get("name").and_then(Value::as_str)?)?.name.clone();
+            Some(Confirmation {
+                title: "Delete filter preset?".into(),
+                message: format!("The filter preset “{name}” will be deleted from your presets. Artwork that uses its filters keeps them. This cannot be undone."),
+                action: "Delete Preset".into(),
+                irreversible: true,
+            })
+        }
+        "filter.preset_save" => {
+            let name = s.filter_presets.find(p.get("name").and_then(Value::as_str)?)?.name.clone();
+            Some(Confirmation {
+                title: "Replace filter preset?".into(),
+                message: format!("You already have a filter preset named “{name}”. Saving replaces its filters. This cannot be undone."),
+                action: "Replace".into(),
+                irreversible: true,
+            })
+        }
+        "filter.preset_export" => {
+            let path = Path::new(p.get("path").and_then(Value::as_str)?);
+            crate::vfs::exists(path).then(|| overwrite(path, "Exporting the filter presets"))
+        }
+        "brush.preset_export" => {
+            let path = Path::new(p.get("path").and_then(Value::as_str)?);
+            crate::vfs::exists(path).then(|| overwrite(path, "Exporting the brushes"))
+        }
+        "file.new" | "file.new_sample" | "file.new_from_template" | "file.open" | "file.open_recent" | "file.recover" if s.is_dirty() => Some(Confirmation {
             title: "Discard unsaved changes?".into(),
             message: format!("“{}” has changes that are not saved. They will be lost, and its undo history is cleared.", doc_name(s)),
             action: "Discard Changes".into(),
@@ -109,9 +195,27 @@ pub fn confirmation(s: &Session, id: &str, p: &Value) -> Option<Confirmation> {
             let same = s.path.as_deref() == Some(path);
             (!same && crate::vfs::exists(path)).then(|| overwrite(path, "Saving"))
         }
-        "file.export_png" | "file.export_gif" | "file.export_svg" | "file.export_video" | "file.export_lottie" | "file.export_html" | "file.export_audio" => {
+        "file.export_png" | "file.export_gif" | "file.export_apng" | "file.export_webp" | "file.export_svg" | "file.export_video" | "file.export_lottie" | "file.export_html" | "file.export_audio" | "file.export_plugin" => {
             let path = Path::new(p.get("path").and_then(Value::as_str)?);
             crate::vfs::exists(path).then(|| overwrite(path, "Exporting"))
+        }
+        "file.publish" => {
+            // Publishing replaces what is already there; what this session published itself
+            // it replaces without asking again (ADR 0060).
+            let found = crate::publish::existing(s, &crate::publish::planned(s, p)?);
+            let names: Vec<String> = found.iter().take(3).map(|f| f.display().to_string()).collect();
+            let more = found.len().saturating_sub(names.len());
+            (!found.is_empty()).then(|| Confirmation {
+                title: if found.len() == 1 { "Replace published file?".into() } else { "Replace published files?".into() },
+                message: format!(
+                    "Publishing replaces {} already there: {}{}. This cannot be undone.",
+                    if found.len() == 1 { "a file".to_string() } else { plural(found.len(), "file") },
+                    names.join(", "),
+                    if more > 0 { format!(" and {more} more") } else { String::new() }
+                ),
+                action: "Publish".into(),
+                irreversible: true,
+            })
         }
         "file.export_sprite_sheet" => {
             // The sheet and its frame map: either one already there is replaced.
@@ -141,6 +245,16 @@ pub fn confirmation(s: &Session, id: &str, p: &Value) -> Option<Confirmation> {
                 title: "Delete sound?".into(),
                 message: format!("“{}” plays on {}. It comes off them and out of the library. You can undo this.", snd.name, plural(used, "keyframe")),
                 action: "Delete Sound".into(),
+                irreversible: false,
+            })
+        }
+        "find.replace" => {
+            // Replace All over many places asks first (ADR 0058); one undo step takes it back.
+            let n = crate::find::replace_count(s, p)?;
+            (n > crate::find::REPLACE_ASK).then(|| Confirmation {
+                title: "Replace all?".into(),
+                message: format!("This replaces what was found in {}. You can undo this in one step.", plural(n, "place")),
+                action: "Replace All".into(),
                 irreversible: false,
             })
         }

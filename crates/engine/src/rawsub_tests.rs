@@ -291,13 +291,14 @@ fn a_pasted_raw_shape_cuts_what_it_lands_on() {
 }
 
 fn linear() -> Paint {
-    Paint::Linear { start: Vec2::new(0.0, 0.0), end: Vec2::new(200.0, 0.0), stops: vec![GradientStop { offset: 0.0, color: Rgba::hex(0xff0000) }, GradientStop { offset: 1.0, color: Rgba::hex(0x0000ff) }] }
+    Paint::linear(Vec2::new(0.0, 0.0), Vec2::new(200.0, 0.0), vec![GradientStop { offset: 0.0, color: Rgba::hex(0xff0000) }, GradientStop { offset: 1.0, color: Rgba::hex(0x0000ff) }])
 }
 
 #[test]
 fn gradient_fills_take_part_in_the_merge() {
     let mut s = raw_session();
     s.style.fill_paint = Some(linear());
+    s.style.lock_fill = true;
     run(&mut s, "draw.rect", json!({"x": 0, "y": 0, "w": 200, "h": 100, "stroke": null}));
     assert_eq!(fills(&s).len(), 1, "raw, not an object");
     // A line across cuts it in two; each half shows its part of the gradient where it was.
@@ -321,11 +322,11 @@ fn gradient_fills_take_part_in_the_merge() {
     run(&mut s, "draw.rect", json!({"x": 50, "y": 25, "w": 50, "h": 50, "fill": "#00ff00", "stroke": null}));
     let g = fills(&s).into_iter().find(|e| fill_color(e).is_none()).unwrap();
     assert!((area(&g) - (20_000.0 - 2_500.0)).abs() < 1.0);
-    // A width profile still makes an object.
+    // A width profile is raw too (ADR 0093: the merge carries it into each piece).
     let mut t = raw_session();
     t.style.set_profile(anicraft_doc::ProfilePreset::TaperBoth);
     run(&mut t, "draw.line", json!({"x0": 0, "y0": 0, "x1": 100, "y1": 0}));
-    assert!(raw(&t).is_empty());
+    assert_eq!(raw(&t).len(), 1);
     let _ = Affine::IDENTITY;
 }
 
@@ -383,6 +384,7 @@ fn subselection_timings() {
 fn the_eraser_takes_gradient_fills_too() {
     let mut s = raw_session();
     s.style.fill_paint = Some(linear());
+    s.style.lock_fill = true;
     run(&mut s, "draw.rect", json!({"x": 0, "y": 0, "w": 200, "h": 100, "stroke": null}));
     let before: f32 = fills(&s).iter().map(|e| area(e)).sum();
     run(&mut s, "draw.erase", json!({"points": [[100, -20], [100, 120]], "size": 20}));

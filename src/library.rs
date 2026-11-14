@@ -58,6 +58,33 @@ pub struct LibraryView {
     list_rect: Option<Rect>,
     uses: Option<(StateId, HashMap<LibraryItem, usize>, HashSet<LibraryItem>)>,
     preview: Option<Preview>,
+    /// Where files dropped from the desktop land this frame (ADR 0059).
+    pub drop_zone: DropZone,
+}
+
+/// The Library as a target for files dropped from the desktop (ADR 0059): the panel, and each
+/// row with the folder a file dropped on it goes into. Cleared every frame before the panels
+/// draw, so a hidden panel takes nothing.
+#[derive(Default)]
+pub struct DropZone {
+    pub panel: Option<Rect>,
+    pub rows: Vec<(Rect, Option<FolderId>)>,
+}
+
+impl DropZone {
+    /// The folder a file dropped at `p` goes into (`None` inside: the top level), or `None`
+    /// outside the panel.
+    pub fn folder_at(&self, p: Pos2) -> Option<Option<FolderId>> {
+        if !self.panel.is_some_and(|r| r.contains(p)) {
+            return None;
+        }
+        Some(self.rows.iter().find(|(r, _)| r.contains(p)).and_then(|(_, f)| *f))
+    }
+
+    /// The row a drop at `p` lands on (a folder row, or the row inside that folder).
+    pub fn row_at(&self, p: Pos2) -> Option<Rect> {
+        self.rows.iter().find(|(r, _)| r.contains(p)).map(|(r, _)| *r)
+    }
 }
 
 /// The current item's preview picture, and what it was made from.
@@ -413,10 +440,10 @@ pub fn panel(app: &mut App, ui: &mut egui::Ui) {
 fn toolbar(app: &mut App, ui: &mut egui::Ui) {
     let search = ui.add(egui::TextEdit::singleline(&mut app.library.filter).hint_text(tr!("Search")).desired_width(ui.available_width()));
     search.set_name(tr!("Search the Library"));
-    ui.horizontal(|ui| {
+    ui.horizontal_wrapped(|ui| {
         ui.label(text(Type::Label, tr!("Sort")));
         egui::ComboBox::from_id_salt("lib_sort")
-            .width(110.0)
+            .width(crate::theme::fit(ui, 110.0))
             .selected_text(app.library.sort.label())
             .show_ui(ui, |ui| {
                 for s in Sort::ALL {
@@ -558,6 +585,7 @@ fn list_ui(app: &mut App, ui: &mut egui::Ui, list: &[Row], unused: &HashSet<Libr
                 LibraryEntry::Folder(f) => Some(f),
                 e => app.s.doc.parent_of(e),
             };
+            app.library.drop_zone.rows.push((r.intersect(ui.clip_rect()), target));
             if let Some(payload) = resp.dnd_hover_payload::<Vec<LibraryEntry>>()
                 && !payload.contains(&row.entry)
             {
@@ -728,7 +756,7 @@ fn row_menu(app: &mut App, ui: &mut egui::Ui, e: LibraryEntry) {
 
 /// New Folder and Delete, and placing the current item.
 fn actions_row(app: &mut App, ui: &mut egui::Ui) {
-    ui.horizontal(|ui| {
+    ui.horizontal_wrapped(|ui| {
         if crate::timeline::icon_button(ui, tr!("New Folder"), None, Icon::FolderPlus).clicked() {
             new_folder(app);
         }
@@ -763,7 +791,7 @@ fn properties(app: &mut App, ui: &mut egui::Ui) {
             let Some((kind, linkage)) = app.s.doc.symbol(id).map(|s| (s.kind, s.linkage.clone())) else { return };
             crate::theme::form_row(ui, crate::theme::FORM_LABEL_DOCK, tr!("Type"), |ui| {
                 egui::ComboBox::from_id_salt("lib_symkind")
-                    .width(150.0)
+                    .width(crate::theme::fit(ui, 150.0))
                     .selected_text(crate::panels::symbol_kind_label(kind))
                     .show_ui(ui, |ui| {
                         for (k, key) in [(SymbolKind::Graphic, "graphic"), (SymbolKind::MovieClip, "movie_clip"), (SymbolKind::Button, "button")] {
@@ -783,6 +811,8 @@ fn properties(app: &mut App, ui: &mut egui::Ui) {
                     app.run("script.set_class", json!({"symbol": id.0, "class": v, "base": base}));
                 }
             });
+            // 9-slice scaling (ADR 0055), as in Animate's Symbol Properties.
+            crate::panels::scale_grid_props(app, ui, id, "library");
         }
         LibraryItem::Bitmap(id) => {
             let Some(mut on) = app.s.doc.bitmap(id).map(|b| b.smoothing) else { return };

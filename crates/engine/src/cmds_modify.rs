@@ -68,17 +68,19 @@ impl Clipboard {
     }
 }
 
-fn symbol_refs(e: &Element) -> Option<SymbolId> {
+/// The symbols `e` places: itself, or what is inside it as a group (ADR 0073).
+fn symbol_refs(e: &Element) -> Vec<SymbolId> {
     match &e.kind {
-        ElementKind::Symbol { symbol, .. } => Some(*symbol),
-        ElementKind::Shape(_) | ElementKind::Text(_) | ElementKind::Camera => None,
+        ElementKind::Symbol { symbol, .. } => vec![*symbol],
+        ElementKind::Group { .. } => anicraft_doc::expand_groups(std::slice::from_ref(&Arc::new(e.clone()))).iter().filter_map(|m| if let ElementKind::Symbol { symbol, .. } = m.kind { Some(symbol) } else { None }).collect(),
+        ElementKind::Shape(_) | ElementKind::Text(_) | ElementKind::Camera => Vec::new(),
     }
 }
 
 /// Symbols reachable from `roots` (bounded walk; libraries may be cyclic).
 pub(crate) fn collect_symbols(s: &Session, roots: &[Element]) -> Vec<Arc<Symbol>> {
     let mut seen: HashSet<SymbolId> = HashSet::new();
-    let mut stack: Vec<SymbolId> = roots.iter().filter_map(symbol_refs).collect();
+    let mut stack: Vec<SymbolId> = roots.iter().flat_map(symbol_refs).collect();
     let mut out = Vec::new();
     while let Some(id) = stack.pop() {
         if !seen.insert(id) || seen.len() > 10_000 {
@@ -87,7 +89,7 @@ pub(crate) fn collect_symbols(s: &Session, roots: &[Element]) -> Vec<Arc<Symbol>
         let Some(sym) = s.doc.library.iter().find(|x| x.id == id) else { continue };
         for l in &sym.timeline.layers {
             for k in &l.keyframes {
-                stack.extend(k.elements.iter().filter_map(|e| symbol_refs(e)));
+                stack.extend(k.elements.iter().flat_map(|e| symbol_refs(e)));
             }
         }
         out.push(sym.clone());
@@ -183,7 +185,7 @@ fn layer_targets(s: &mut Session, src: &[(LayerId, String)]) -> Result<Vec<Layer
             k.duration = s.frame_count().max(1);
         }
         layer.color = crate::cmds_timeline::layer_color(count + 1);
-        let tl = crate::editing::edited_mut(&mut s.doc, s.scene, &s.editing);
+        let tl = crate::editing::edited_mut(&mut s.doc, s.scene, &s.editing)?;
         tl.layers.push(Arc::new(layer));
         tl.repair_masks();
         out.push(id);

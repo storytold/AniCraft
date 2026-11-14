@@ -21,8 +21,13 @@ AniCraft is **MIT OR Apache-2.0**, the same as its sibling PhotoCraft (`LICENSE-
 Allowed: MIT, Apache-2.0 (incl. LLVM exception), BSD-2/3-Clause, ISC, Zlib, 0BSD, BSL-1.0,
 Unicode-3.0, Unlicense. Font licences (OFL-1.1, Ubuntu-font-1.0) are allowed **only** for
 `epaint_default_fonts`. Copyleft (GPL, LGPL, AGPL, MPL, EPL, CDDL, SSPL), "non-commercial",
-"source-available" and unknown licences are **not allowed**. Only crates.io sources are allowed
-(no unknown registries or git).
+"source-available" and unknown licences are **not allowed**. Crates.io and the explicitly allowlisted Storytold shared library repository are allowed;
+unknown registries and git sources remain denied. The native update checker uses `craft-update`
+(MIT OR Apache-2.0), pinned to a commit of `storytold/craft-libs`; its HTTP, verification and
+platform installer code are shared with the other Craft apps. A narrowly approved exception
+accepts `webpki-root-certs` 1.0.12 under CDLA-Permissive-2.0 for Mozilla certificate data pulled
+in by the HTTPS verifier. It applies only to that data crate and version; the code licence
+allowlist is unchanged.
 
 ```sh
 cargo deny check licenses bans sources   # policy in deny.toml; must pass before every commit
@@ -49,6 +54,43 @@ cargo deny check advisories              # RustSec security advisories (needs ne
   `wasm-encoder`/`wast` (Apache-2.0 WITH LLVM-exception). No new licence. Plug-ins are the
   user's own files: AniCraft ships none in the binary; the sample plug-ins are source under
   `examples/plugins` (MIT OR Apache-2.0).
+
+### Opening documents on macOS (2026-11-11, ADR 0062)
+
+New crate, from crates.io, macOS builds only: `fmv-macos-events` 0.1.0 (MIT OR Apache-2.0),
+pinned with `=`. It registers AppKit's open-documents and quit Apple Event handlers so that
+AniCraft's own code stays free of `unsafe`. It was read in full before it was added: about 170
+lines, no network or file access. Its `objc2` 0.6, `objc2-app-kit` 0.3 and `objc2-foundation`
+0.3 (MIT, Zlib OR Apache-2.0 OR MIT) were already in the tree through wgpu. No new licence. It
+declares `rust-version = 1.95`, so the workspace's minimum Rust is now 1.95.
+**Audit note:** the crate is built only for `cfg(target_os = "macos")`, is pinned with `=0.1.0`
+(the checksum is in `Cargo.lock`), and its licence is checked by `cargo deny`. It registers
+two Apple Event handlers (open documents, quit) and an observer, and returns paths through a
+main-thread inbox. It has no network, file or process access, and no build script. Read any
+new version in full before it comes in.
+
+### The user guide (2026-11-11, ADR 0069)
+
+New crates, from crates.io: `pulldown-cmark` 0.13 (MIT) with `pulldown-cmark-escape` (MIT),
+`unicase` (MIT OR Apache-2.0), `bitflags` and `memchr`, already in the tree. Default features
+off (no command-line binary). It turns the user guide's Markdown into the bundled HTML book. The
+guide's screenshots are original work (ATTRIBUTION.md). The guide names Adobe and Animate only
+nominatively, with the non-affiliation line on every page. No new licence.
+
+### Find and Replace (2026-11-11, ADR 0058)
+
+New crates, from crates.io: `regex` 1 with `regex-syntax` and `regex-automata` (MIT OR
+Apache-2.0) and `aho-corasick` (Unlicense OR MIT), built with only the `std`, `perf`,
+`unicode-case` and `unicode-perl` features. They match Find and Replace's patterns in linear
+time with size limits. No new licence.
+
+### System contrast setting (2026-11-11, ADR 0064)
+
+New direct dependency on Windows only: `winreg` 0.55 (MIT, crates.io), already in the tree
+through `craft-update`. It reads one registry value, the high-contrast flag (and, since ADR 0077,
+`AppsUseLightTheme` for the system's light or dark mode, with `prefers-color-scheme` on the web). The web build
+turns on web-sys's `MediaQueryList` feature (same crate, same licence). macOS and Linux ask
+system tools (`defaults`, `gdbus`, `gsettings`), so nothing is linked. No new licence.
 
 ### Interface languages (2026-11-10, ADR 0040)
 
@@ -83,6 +125,15 @@ page's player in it. Nothing of it is in the app or the CLI. No new licence. The
 JavaScript is our own code (`crates/render/src/html/`), MIT OR Apache-2.0 like the rest, and
 uses no npm packages.
 
+### Animated PNG and WebP (2026-11-11, ADR 0063)
+
+New crate, from crates.io: `image-webp` 0.2 (lossless WebP encoding and decoding in pure Rust,
+`#![forbid(unsafe_code)]`, MIT OR Apache-2.0). Its dependencies, `byteorder-lite` (Unlicense
+OR MIT) and `quick-error` (MIT OR Apache-2.0), were already in the tree. No new licence. APNG frames use the `png` crate already in
+the tree. There is no lossy WebP yet: the only lossy encoders on crates.io bind the C libwebp
+library, which this project does not build. APNG and WebP are both royalty-free (see the
+codec table).
+
 ### Sound (2026-11-09, ADR 0020)
 
 The audio slice adds, all permissive and from crates.io: `lewton` (Ogg Vorbis decoding, MIT OR
@@ -91,6 +142,11 @@ Apache-2.0), and in the desktop app `cpal` (sound output, Apache-2.0) with its p
 (`windows` on Windows, `alsa`/`alsa-sys` on Linux and the BSDs, MIT OR Apache-2.0; CoreAudio
 bindings on macOS). No new licence. `symphonia`, the usual Rust decoder, is MPL-2.0 and was not
 used.
+
+Sound output in the browser (2026-11-13, ADR 0095) uses the same `cpal` with its `wasm-bindgen`
+feature (Web Audio), which brings only crates already in the web build or under MIT OR
+Apache-2.0 (`wasm-bindgen`, `js-sys`, `web-sys`, `futures-channel`, `futures-util`). No new
+licence.
 
 ### Installers (2026-11-09, ADR 0026)
 

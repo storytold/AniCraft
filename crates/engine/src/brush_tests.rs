@@ -196,7 +196,7 @@ fn bad_params_are_errors() {
         json!({"points": [[0, 0]], "size": 0}),
         json!({"points": [[0, 0]], "size": 1e9}),
         json!({"points": [[0, 0]], "shape": "star"}),
-        json!({"points": [[0, 0]], "mode": "inside"}),
+        json!({"points": [[0, 0]], "mode": "outside"}),
         json!({"points": [[0, 0]], "roundness": 1}),
         json!({"points": [[0, 0]], "smoothing": 101}),
         json!({"points": [[0, 0], [1e7, 0]]}),
@@ -225,4 +225,85 @@ fn a_calligraphic_stroke_merges_whole() {
         })
         .collect();
     assert!(areas[0] > 7000.0 && (areas[0] - areas[1]).abs() < 1.0, "{areas:?}");
+}
+
+// ----- ADR 0093: tilt and texture --------------------------------------------------------------
+
+/// A horizontal drag 200 long at y 100 with the pen held at `altitude` toward `azimuth`.
+fn tilted(altitude: f32, azimuth: f32) -> Vec<[f32; 5]> {
+    (0..=30).map(|i| [100.0 + 200.0 * i as f32 / 30.0, 100.0, 1.0, altitude, azimuth]).collect()
+}
+
+#[test]
+fn tilt_turns_and_widens_the_tip_and_a_mouse_is_unaffected() {
+    // A flat nib along the drag paints thin; the pen leaning across it (90°) stands it up.
+    let flat = json!({"size": 20, "roundness": 20, "angle": 0, "smoothing": 0});
+    let paint = |extra: Value, pts: Value| {
+        let mut s = blank(true);
+        let mut p = flat.clone();
+        p["points"] = pts;
+        for (k, v) in extra.as_object().unwrap() {
+            p[k] = v.clone();
+        }
+        run(&mut s, "draw.brush", p);
+        shapes(&s).remove(0).0
+    };
+    let across = paint(json!({"tilt_angle": true}), json!(tilted(30.0, 90.0)));
+    assert!((bounds(&across).height() - 20.0).abs() < 0.8, "{:?}", bounds(&across));
+    // Off, or without tilt in the points (a mouse), the nib stays as set.
+    let off = paint(json!({}), json!(tilted(30.0, 90.0)));
+    assert!((bounds(&off).height() - 4.0).abs() < 0.8, "{:?}", bounds(&off));
+    let mouse = paint(json!({"tilt_angle": true, "tilt_width": true}), json!(stroke(100.0, 100.0, 300.0, 100.0)));
+    assert_eq!(mouse, paint(json!({}), json!(stroke(100.0, 100.0, 300.0, 100.0))), "no tilt, no change");
+    // Width: a round 10 brush laid flat paints 20 wide (1 + lean), half way down 15.
+    let round = |alt: f32| {
+        let mut s = blank(true);
+        run(&mut s, "draw.brush", json!({"points": tilted(alt, 0.0), "size": 10, "smoothing": 0, "tilt_width": true}));
+        bounds(&shapes(&s).remove(0).0).height()
+    };
+    assert!((round(0.0) - 20.0).abs() < 0.5 && (round(45.0) - 15.0).abs() < 0.5 && (round(90.0) - 10.0).abs() < 0.5, "{} {} {}", round(0.0), round(45.0), round(90.0));
+    // The Paint Brush: tilt widens its stroke's profile.
+    let mut s = blank(true);
+    run(&mut s, "draw.brush", json!({"points": tilted(0.0, 0.0), "size": 6, "as_stroke": true, "tilt_width": true, "pressure_size": false}));
+    let (sh, _) = shapes(&s).remove(0);
+    let prof = sh.stroke.as_ref().and_then(|st| st.profile.clone()).expect("a profile");
+    assert!((prof.at(0.5).0 - 2.0).abs() < 0.02, "{:?}", prof.at(0.5));
+    // Bad tilts are errors; tilt past the ends is clamped.
+    assert!(s.execute("draw.brush", &json!({"points": [[0, 0, 1, "up", 0]]})).is_err());
+    assert!(s.execute("draw.brush", &json!({"points": [[0, 0, 1, 0]]})).is_err(), "altitude without azimuth");
+    run(&mut s, "draw.brush", json!({"points": [[0, 0, 1, -40, 1000]], "tilt_width": true}));
+}
+
+#[test]
+fn textured_and_scattered_brushes_paint_vector_fills_that_merge() {
+    let mut s = blank(false);
+    let r = run(&mut s, "draw.brush", json!({"points": stroke(100.0, 200.0, 400.0, 220.0), "preset": "charcoal"}));
+    assert_eq!(r["merged"], true, "raw paint, merged like any other");
+    let raw: Vec<Shape> = shapes(&s).into_iter().map(|(sh, _)| sh).collect();
+    assert!(raw.iter().all(|sh| sh.merge && fill_of(sh).is_some()));
+    let holes: usize = raw.iter().map(|sh| sh.path.cmds.iter().filter(|c| matches!(c, anicraft_geom::PathCmd::MoveTo(_))).count()).sum();
+    assert!(holes > 10, "the paper grain shows through: {holes} loops");
+    // The same stroke again gives the same paint.
+    let mut t = blank(false);
+    run(&mut t, "draw.brush", json!({"points": stroke(100.0, 200.0, 400.0, 220.0), "preset": "charcoal"}));
+    assert_eq!(shapes(&s), shapes(&t));
+    // Spatter throws drops either side; the file keeps them.
+    run(&mut s, "draw.brush", json!({"points": stroke(100.0, 400.0, 400.0, 400.0), "preset": "spatter", "color": BLUE}));
+    let json = crate::format::to_json(&s.doc).unwrap();
+    assert_eq!(crate::format::from_json(&json).unwrap(), s.doc);
+    for p in [json!({"points": [[0, 0]], "texture": 101}), json!({"points": [[0, 0]], "scatter": -1}), json!({"points": [[0, 0]], "tilt_angle": "yes"})] {
+        assert!(s.execute("draw.brush", &p).is_err(), "{p}");
+    }
+    let _ = RED;
+}
+
+#[test]
+fn a_pressured_paint_brush_line_is_raw_now() {
+    // ADR 0068 drew these as objects because profiles didn't merge; ADR 0093 merges them.
+    let mut s = blank(false);
+    let pts: Vec<[f32; 3]> = (0..=20).map(|i| [100.0 + 10.0 * i as f32, 100.0, 0.2 + 0.04 * i as f32]).collect();
+    run(&mut s, "draw.brush", json!({"points": pts, "as_stroke": true, "size": 8}));
+    let all = shapes(&s);
+    assert_eq!(all.len(), 1);
+    assert!(all[0].0.merge && all[0].0.stroke.as_ref().is_some_and(|st| st.profile.is_some()));
 }

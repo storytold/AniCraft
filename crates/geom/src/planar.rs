@@ -55,6 +55,19 @@ pub struct Piece {
     pub item: usize,
     /// Inside the cutter ([`merge_cut`]); always false from [`merge`].
     pub inside: bool,
+    /// For a stroke piece: the stretches of its items' paths it runs along, in order, each as
+    /// `[from, to]` in path positions (see [`Piece::position`]); `to < from` where it runs
+    /// backwards. What a width profile needs to follow its stroke into each piece (ADR 0093).
+    /// Empty for fills.
+    pub spans: Vec<[f64; 2]>,
+}
+
+impl Piece {
+    /// A place on an item's path as a path position: `k + t` is parameter `t` along the segment
+    /// that command `k` draws (a `Close` draws the closing line).
+    pub fn position(cmd: usize, t: f64) -> f64 {
+        cmd as f64 + t.clamp(0.0, 1.0)
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -73,6 +86,33 @@ pub fn merge(items: &[Item]) -> Option<Merged> {
 /// there, nothing of the cutter itself comes out, and each piece says whether it lies inside it.
 pub fn merge_cut(items: &[Item], cutter: &Path) -> Option<Merged> {
     merge_with(items, Some(cutter))
+}
+
+/// The area `paths` cover together (each filled by its own rule), as one path of loops that
+/// don't overlap: even-odd and non-zero fill it alike. Empty when they cover nothing; `None`
+/// when there is too much to merge at once.
+pub fn union(paths: &[(&Path, FillRule)]) -> Option<Path> {
+    let items: Vec<Item> = paths.iter().map(|&(path, fill_rule)| Item { path, fill: Some(0), fill_rule, stroke: None }).collect();
+    let merged = merge(&items)?;
+    Some(join(merged.fills.into_iter().map(|p| p.path)))
+}
+
+/// The part of `subject` (filled by `rule`) inside `region` (filled even-odd, such as a
+/// [`union`]): a boolean intersection, exact to [`SNAP`], as one path of loops that don't
+/// overlap (ADR 0080: the Brush's Paint Selection and Paint Inside). Empty when they don't
+/// overlap; `None` when there is too much to merge at once.
+pub fn intersect(subject: &Path, rule: FillRule, region: &Path) -> Option<Path> {
+    let merged = merge_cut(&[Item { path: subject, fill: Some(0), fill_rule: rule, stroke: None }], region)?;
+    Some(join(merged.fills.into_iter().filter(|p| p.inside).map(|p| p.path)))
+}
+
+/// Pieces' paths, one after another.
+fn join(pieces: impl Iterator<Item = Path>) -> Path {
+    let mut out = Path::new();
+    for p in pieces {
+        out.cmds.extend(p.cmds);
+    }
+    out
 }
 
 /// The item number the cutter's segments carry.
@@ -269,6 +309,15 @@ struct Seg {
     line: bool,
     item: usize,
     stroke: bool,
+    /// Its ends as path positions on its item ([`Piece::position`]).
+    pos: [f64; 2],
+}
+
+impl Seg {
+    /// Path position of parameter `t`.
+    fn at(&self, t: f64) -> f64 {
+        self.pos[0] + (self.pos[1] - self.pos[0]) * t
+    }
 }
 
 /// Every segment of every item. A filled subpath left open gets its closing edge (unstroked).
@@ -279,31 +328,32 @@ fn collect(items: &[Item]) -> Option<Vec<Seg>> {
             continue;
         }
         let stroke = it.stroke.is_some();
-        let mut push = |c: Cubic, line: bool, stroke: bool| {
+        let mut push = |c: Cubic, line: bool, stroke: bool, k: usize| {
             if !c.iter().all(|p| p.finite()) || hull_len(&c) <= 1e-9 {
                 return;
             }
+            let k = k as f64;
             // A segment that comes back to where it began (a loop) is two, so no edge is a loop.
             if c[0].dist(c[3]) < TOL && hull_len(&c) > 2.0 * TOL {
                 let (a, b) = split(&c, 0.5);
-                segs.push(Seg { c: a, line, item, stroke });
-                segs.push(Seg { c: b, line, item, stroke });
+                segs.push(Seg { c: a, line, item, stroke, pos: [k, k + 0.5] });
+                segs.push(Seg { c: b, line, item, stroke, pos: [k + 0.5, k + 1.0] });
             } else {
-                segs.push(Seg { c, line, item, stroke });
+                segs.push(Seg { c, line, item, stroke, pos: [k, k + 1.0] });
             }
         };
         let (mut start, mut last) = (P::default(), P::default());
         let (mut open, mut drawn) = (false, false);
-        let close = |push: &mut dyn FnMut(Cubic, bool, bool), last: P, start: P, stroked: bool| {
+        let close = |push: &mut dyn FnMut(Cubic, bool, bool, usize), last: P, start: P, stroked: bool, k: usize| {
             if last.dist(start) > 0.0 {
-                push(line_cubic(last, start), true, stroked);
+                push(line_cubic(last, start), true, stroked, k);
             }
         };
-        for cmd in &it.path.cmds {
+        for (k, cmd) in it.path.cmds.iter().enumerate() {
             let to = match *cmd {
                 PathCmd::MoveTo(p) => {
                     if open && drawn && it.fill.is_some() {
-                        close(&mut push, last, start, false);
+                        close(&mut push, last, start, false, k);
                     }
                     start = P::of(p);
                     last = start;
@@ -312,7 +362,7 @@ fn collect(items: &[Item]) -> Option<Vec<Seg>> {
                 }
                 PathCmd::Close => {
                     if open {
-                        close(&mut push, last, start, stroke);
+                        close(&mut push, last, start, stroke, k);
                     }
                     last = start;
                     (open, drawn) = (false, false);
@@ -325,12 +375,12 @@ fn collect(items: &[Item]) -> Option<Vec<Seg>> {
                 }
                 PathCmd::CubicTo(a, b, p) => ([last, P::of(a), P::of(b), P::of(p)], false),
             };
-            push(to.0, to.1, stroke);
+            push(to.0, to.1, stroke, k);
             last = to.0[3];
             (open, drawn) = (true, true);
         }
         if open && drawn && it.fill.is_some() {
-            close(&mut push, last, start, false);
+            close(&mut push, last, start, false, it.path.cmds.len());
         }
         if segs.len() > MAX_SEGMENTS {
             return None;
@@ -793,7 +843,7 @@ impl Map {
                 None => {
                     let (style, item, inside) = top.get(&g).copied().unwrap_or((0, 0, false));
                     piece_of.insert(g, out.fills.len());
-                    out.fills.push(Piece { style, path, item, inside });
+                    out.fills.push(Piece { style, path, item, inside, spans: Vec::new() });
                 }
             }
         }
@@ -850,17 +900,24 @@ impl Map {
             let item = halves.iter().filter_map(|&h| stroke_of[h / 2]).max().unwrap_or(0);
             // A run along the cutter's edge counts as inside it.
             let inside = halves.iter().any(|&h| cut_edge[h / 2]) || halves.get(halves.len() / 2).is_some_and(|&h| cutter.covers(eval(&self.curve(h), 0.5), FillRule::EvenOdd));
-            out.strokes.push(Piece { style: st, path: self.emit(&halves, closed, segs), item, inside });
+            let (path, spans) = self.emit_spans(&halves, closed, segs);
+            out.strokes.push(Piece { style: st, path, item, inside, spans });
         }
     }
 
     /// A subpath along `halves`: pieces of one segment joined back, straight runs made one line.
     fn emit(&self, halves: &[Half], closed: bool, segs: &[Seg]) -> Path {
+        self.emit_spans(halves, closed, segs).0
+    }
+
+    /// [`Map::emit`], with the stretches of the items' paths the subpath runs along.
+    fn emit_spans(&self, halves: &[Half], closed: bool, segs: &[Seg]) -> (Path, Vec<[f64; 2]>) {
         let mut runs: Vec<Run> = Vec::new();
         for &h in halves {
             let e = &self.edges[h / 2];
             let (t0, t1) = if h.is_multiple_of(2) { (e.t[0], e.t[1]) } else { (e.t[1], e.t[0]) };
-            let run = Run { c: self.curve(h), line: e.line, src: e.src, t: [t0, t1] };
+            let spans = segs.get(e.src).map(|s| vec![[s.at(t0), s.at(t1)]]).unwrap_or_default();
+            let run = Run { c: self.curve(h), line: e.line, src: e.src, t: [t0, t1], spans };
             match runs.last_mut().and_then(|last| last.join(&run, segs)) {
                 Some(j) => {
                     if let Some(last) = runs.last_mut() {
@@ -891,8 +948,33 @@ impl Map {
         if closed && !runs.is_empty() {
             path.close();
         }
-        path
+        let mut spans: Vec<[f64; 2]> = Vec::new();
+        for sp in runs.into_iter().flat_map(|r| r.spans) {
+            push_span(&mut spans, sp);
+        }
+        (path, spans)
     }
+}
+
+/// Adds `sp` to `spans`, extending the last one when `sp` carries straight on from it.
+fn push_span(spans: &mut Vec<[f64; 2]>, sp: [f64; 2]) {
+    if let Some(last) = spans.last_mut()
+        && (last[1] - sp[0]).abs() < 1e-9
+        && (last[1] >= last[0]) == (sp[1] >= sp[0])
+    {
+        last[1] = sp[1];
+        return;
+    }
+    spans.push(sp);
+}
+
+/// Two runs' spans, one after the other.
+fn joined(a: &[[f64; 2]], b: &[[f64; 2]]) -> Vec<[f64; 2]> {
+    let mut out = a.to_vec();
+    for &sp in b {
+        push_span(&mut out, sp);
+    }
+    out
 }
 
 struct Faces {
@@ -907,6 +989,8 @@ struct Run {
     line: bool,
     src: usize,
     t: [f64; 2],
+    /// The stretches of item paths it covers ([`Piece::spans`]).
+    spans: Vec<[f64; 2]>,
 }
 
 impl Run {
@@ -916,14 +1000,14 @@ impl Run {
         if self.src == o.src && self.t[1] == o.t[0] && forward(self) == forward(o) && self.src != usize::MAX {
             let s = segs.get(self.src)?;
             let c = pinned(&sub(&s.c, self.t[0], o.t[1]), self.line, self.c[0], o.c[3]);
-            return Some(Run { c, line: self.line, src: self.src, t: [self.t[0], o.t[1]] });
+            return Some(Run { c, line: self.line, src: self.src, t: [self.t[0], o.t[1]], spans: joined(&self.spans, &o.spans) });
         }
         if self.line && o.line {
             let (a, b, c) = (self.c[0], self.c[3], o.c[3]);
             let d = c.sub(a);
             let l = d.len();
             if l > 1e-9 && (d.cross(b.sub(a)) / l).abs() < 0.01 && d.dot(b.sub(a)) > 0.0 && d.dot(c.sub(b)) > 0.0 {
-                return Some(Run { c: line_cubic(a, c), line: true, src: usize::MAX, t: [0.0, 0.0] });
+                return Some(Run { c: line_cubic(a, c), line: true, src: usize::MAX, t: [0.0, 0.0], spans: joined(&self.spans, &o.spans) });
             }
         }
         None

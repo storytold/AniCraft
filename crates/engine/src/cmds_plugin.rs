@@ -31,16 +31,37 @@ const MAX_ELEMENTS: usize = 10_000;
 /// a namespace this list doesn't know is refused until someone decides (a test checks that
 /// every registered namespace is known).
 pub fn plugin_may_call(id: &str) -> std::result::Result<(), &'static str> {
-    const DOCUMENT: &[&str] = &["draw", "edit", "element", "symbol", "arrange", "modify", "library", "text", "scene", "path", "paint", "timeline", "layer", "align", "doc", "motion", "sound", "stroke", "tween", "actions", "instance", "camera", "bone", "script", "raw", "frames"];
+    const DOCUMENT: &[&str] = &["draw", "edit", "element", "symbol", "arrange", "modify", "library", "text", "scene", "path", "paint", "timeline", "layer", "align", "doc", "motion", "sound", "stroke", "tween", "actions", "instance", "camera", "bone", "warp", "script", "raw", "frames", "find", "explorer", "ease"];
     match id {
         "edit.undo" | "edit.redo" => Err("a plug-in run is one undo step; it can't undo or redo"),
-        "edit.cut" | "edit.copy" | "edit.paste" | "edit.paste_in_place" | "timeline.cut_frames" | "timeline.copy_frames" | "timeline.paste_frames" | "frames.cut" | "frames.copy" | "frames.paste" => {
+        "edit.cut" | "edit.copy" | "edit.paste" | "edit.paste_in_place" | "timeline.cut_frames" | "timeline.copy_frames" | "timeline.paste_frames" | "frames.cut" | "frames.copy" | "frames.paste" | "ease.copy" | "ease.paste" => {
             Err("plug-ins don't use your clipboard")
         }
         _ => match id.split('.').next().unwrap_or("") {
-            "file" => Err("plug-ins can't open, save, import or export files"),
+            "file" => Err("plug-ins can't open, save, import, export or publish files"),
+            // Reading the settings is harmless; changing them changes what Publish writes where.
+            "publish" if id == "publish.settings_get" => Ok(()),
+            "publish" => Err("plug-ins can't change what Publish writes"),
+            "prefs" => Err("plug-ins can't read or change your preferences"),
+            // Listing the brushes is harmless (and painting with one is `draw.brush`); the
+            // user's own brushes are their preferences, and a brush set is a file.
+            "brush" if id == "brush.preset_list" => Ok(()),
+            "brush" => Err("plug-ins can't change your brushes or read and write brush sets"),
+            // Filter lists are the document's (ADR 0091); copied filters are the artist's
+            // clipboard, and the presets their preferences (listing and applying one is fine).
+            "filter" if matches!(id, "filter.copy" | "filter.paste") => Err("plug-ins don't use your clipboard"),
+            "filter" if matches!(id, "filter.preset_save" | "filter.preset_rename" | "filter.preset_delete" | "filter.preset_export" | "filter.preset_import") => Err("plug-ins can't change your filter presets or read and write preset files"),
+            "filter" => Ok(()),
+            // The document's swatches are document data; swatch files are files.
+            "swatch" if matches!(id, "swatch.import" | "swatch.export") => Err("plug-ins can't read or write swatch files"),
+            "swatch" => Ok(()),
             "plugin" => Err("plug-ins can't install, run or remove plug-ins"),
+            "desktop" => Err("plug-ins can't change your applications menu or which app opens your files"),
             "control" => Err("plug-ins can't play the movie"),
+            // A scene's guides are the document's (ADR 0076); whether rulers, grid and guides
+            // show and snap is how you work.
+            "view" if matches!(id, "view.aids" | "view.guide_add" | "view.guide_move" | "view.guide_delete" | "view.guides_clear") => Ok(()),
+            "view" => Err("plug-ins can't change how your stage shows and snaps"),
             ns if DOCUMENT.contains(&ns) => Ok(()),
             _ => Err("plug-ins can't call this command"),
         },
@@ -78,7 +99,7 @@ fn document_view(s: &Session) -> Value {
         .timeline()
         .layers
         .iter()
-        .map(|l| json!({"id": l.id.0, "name": l.name, "kind": format!("{:?}", l.kind).to_lowercase(), "visible": l.visible, "locked": l.locked, "parent": l.parent.map(|p| p.0)}))
+        .map(|l| json!({"id": l.id.0, "name": l.name, "kind": format!("{:?}", l.kind).to_lowercase(), "visible": l.visible, "locked": l.locked, "outline": l.outline, "onion": l.onion, "height": u32::from(l.height()) * 100, "parent": l.parent.map(|p| p.0)}))
         .collect();
     json!({
         "abi": anicraft_plugins::ABI_VERSION,
@@ -126,7 +147,8 @@ fn elements_view(s: &Session, req: &Value) -> std::result::Result<Value, String>
             "selected": s.selection.contains(s.layer, e.id),
             "transform": e.transform.m,
             "bounds": if b.is_empty() { Value::Null } else { json!([b.min.x, b.min.y, b.max.x - b.min.x, b.max.y - b.min.y]) },
-            "alpha": e.color.alpha,
+            "alpha": e.color.alpha(),
+            "color_effect": crate::color_effect_json(&e.color),
         });
         match &e.kind {
             ElementKind::Shape(sh) => {
@@ -146,6 +168,10 @@ fn elements_view(s: &Session, req: &Value) -> std::result::Result<Value, String>
                 v["text"] = json!(t.text);
             }
             ElementKind::Camera => v["kind"] = json!("camera"),
+            ElementKind::Group { .. } => {
+                v["kind"] = json!("group");
+                v["members"] = json!(e.kind.group_members().len());
+            }
         }
         out.push(v);
     }
@@ -176,6 +202,8 @@ pub fn describe(s: &Session, p: &Plugin) -> Value {
         "description": m.description,
         "kind": m.kind.key(),
         "entries": m.entries,
+        "format": m.format.as_ref().map(|f| json!({"name": f.name, "extension": f.extension})),
+        "eases": p.eases().iter().map(|c| json!({"id": c.id, "name": c.name})).collect::<Vec<_>>(),
         "selection": if m.selection == SelectionNeed::Required { "required" } else { "optional" },
         "params": m.params.iter().map(|(k, spec)| param_json(k, spec)).collect::<Vec<_>>(),
         "notation": m.params_notation(),
@@ -211,8 +239,11 @@ fn run(s: &mut Session, p: &Value) -> Result<Value> {
     let id = str_req(p, "id")?;
     let plugin = s.plugins.get(id).ok_or_else(|| EngineError::State(format!("no plug-in “{id}” is installed (see plugin.list)")))?;
     let m = plugin.manifest();
-    if m.kind == anicraft_plugins::Kind::FrameScript {
-        return Err(EngineError::State(format!("{} is a frame script: it runs while the movie plays, from a keyframe (Window › Actions)", m.name)));
+    match m.kind {
+        anicraft_plugins::Kind::Command => {}
+        anicraft_plugins::Kind::FrameScript => return Err(EngineError::State(format!("{} is a frame script: it runs while the movie plays, from a keyframe (Window › Actions)", m.name))),
+        anicraft_plugins::Kind::Exporter => return Err(EngineError::State(format!("{} is an export format: use File › Export, or file.export_plugin {{\"format\": \"{}\", \"path\": …}}", m.name, m.id))),
+        anicraft_plugins::Kind::Ease => return Err(EngineError::State(format!("{} adds eases: pick one in a tween's ease menu, or ease.set {{\"easing\": {{\"plugin\": \"{}\", \"ease\": …}}}}", m.name, m.id))),
     }
     if m.selection == SelectionNeed::Required && s.selection.is_empty() {
         return Err(EngineError::State(format!("{} works on the selection: select some artwork first", m.name)));

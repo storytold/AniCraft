@@ -7,7 +7,7 @@ use std::path::Path;
 
 /// Each crate's layer, as AGENTS.md documents it. The shell (`anicraft`, `src/`) is L5.
 const LAYERS: &[(&str, u8)] =
-    &[("geom", 0), ("xml", 0), ("plugins", 0), ("audio", 0), ("actions", 0), ("doc", 1), ("text", 1), ("render", 2), ("xfl", 2), ("svg", 2), ("engine", 3), ("gpu", 3), ("cli", 4)];
+    &[("geom", 0), ("xml", 0), ("plugins", 0), ("audio", 0), ("actions", 0), ("guide", 0), ("doc", 1), ("text", 1), ("render", 2), ("xfl", 2), ("svg", 2), ("engine", 3), ("gpu", 3), ("cli", 4)];
 const SHELL_LAYER: u8 = 5;
 /// UI crates only the shell may use.
 const UI_CRATES: &[&str] = &["egui", "eframe", "winit", "egui-wgpu", "egui_glow"];
