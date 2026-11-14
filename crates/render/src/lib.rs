@@ -94,15 +94,10 @@ impl Pixmap {
 
 /// Encodes straight-alpha RGBA8 as PNG.
 pub fn encode_png(width: u32, height: u32, rgba: &[u8]) -> Result<Vec<u8>, RenderError> {
-    let mut buf = Vec::new();
-    {
-        let mut enc = png::Encoder::new(&mut buf, width, height);
-        enc.set_color(png::ColorType::Rgba);
-        enc.set_depth(png::BitDepth::Eight);
-        let mut w = enc.write_header().map_err(|e| RenderError::Png(e.to_string()))?;
-        w.write_image_data(rgba).map_err(|e| RenderError::Png(e.to_string()))?;
-    }
-    Ok(buf)
+    let img = craft_image_codecs::Image::from_u8(width, height, craft_image_codecs::ChannelLayout::Rgba, rgba.to_vec())
+        .map_err(|e| RenderError::Png(e.to_string()))?;
+    craft_image_codecs::encode(&img, craft_image_codecs::Format::Png, &craft_image_codecs::EncodeOptions::default())
+        .map_err(|e| RenderError::Png(e.to_string()))
 }
 
 /// Where and how to draw.

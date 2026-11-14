@@ -39,23 +39,91 @@ struct Apng {
 }
 
 fn decode_apng(bytes: &[u8]) -> Apng {
-    let dec = png::Decoder::new(std::io::Cursor::new(bytes));
-    let mut reader = dec.read_info().unwrap();
-    let info = reader.info();
-    let (w, h) = (info.width, info.height);
-    let actl = info.animation_control.expect("an acTL chunk");
-    assert_eq!((info.color_type, info.bit_depth), (png::ColorType::Rgba, png::BitDepth::Eight));
+    assert_eq!(&bytes[..8], b"\x89PNG\r\n\x1a\n");
+    let mut pos = 8usize;
+    let mut ihdr = [0u8; 13];
+    let mut num_frames = 0u32;
+    let mut plays = 0u32;
+    struct RawFc {
+        w: u32,
+        h: u32,
+        x: u32,
+        y: u32,
+        delay_num: u16,
+        delay_den: u16,
+        dispose: u8,
+        blend: u8,
+        idat: Vec<u8>,
+    }
+    let mut raw_frames: Vec<RawFc> = Vec::new();
+    while pos + 12 <= bytes.len() {
+        let len = u32::from_be_bytes(bytes[pos..pos + 4].try_into().unwrap()) as usize;
+        let kind: [u8; 4] = bytes[pos + 4..pos + 8].try_into().unwrap();
+        let data = &bytes[pos + 8..pos + 8 + len];
+        pos += 12 + len;
+        match &kind {
+            b"IHDR" => ihdr.copy_from_slice(data),
+            b"acTL" => {
+                num_frames = u32::from_be_bytes(data[0..4].try_into().unwrap());
+                plays = u32::from_be_bytes(data[4..8].try_into().unwrap());
+            }
+            b"fcTL" => {
+                raw_frames.push(RawFc {
+                    w: u32::from_be_bytes(data[4..8].try_into().unwrap()),
+                    h: u32::from_be_bytes(data[8..12].try_into().unwrap()),
+                    x: u32::from_be_bytes(data[12..16].try_into().unwrap()),
+                    y: u32::from_be_bytes(data[16..20].try_into().unwrap()),
+                    delay_num: u16::from_be_bytes(data[20..22].try_into().unwrap()),
+                    delay_den: u16::from_be_bytes(data[22..24].try_into().unwrap()),
+                    dispose: data[24],
+                    blend: data[25],
+                    idat: Vec::new(),
+                });
+            }
+            b"IDAT" => {
+                if let Some(f) = raw_frames.last_mut() {
+                    f.idat.extend_from_slice(data);
+                }
+            }
+            b"fdAT" => {
+                if let Some(f) = raw_frames.last_mut() {
+                    f.idat.extend_from_slice(&data[4..]);
+                }
+            }
+            b"IEND" => break,
+            _ => {}
+        }
+    }
+    assert_eq!(raw_frames.len(), num_frames as usize);
+    let w = u32::from_be_bytes(ihdr[0..4].try_into().unwrap());
+    let h = u32::from_be_bytes(ihdr[4..8].try_into().unwrap());
+    assert_eq!((ihdr[8], ihdr[9]), (8, 6), "8-bit RGBA");
     let mut canvas = vec![0u8; (w * h * 4) as usize];
     let mut frames = Vec::new();
-    let mut buf = vec![0u8; reader.output_buffer_size()];
-    for _ in 0..actl.num_frames {
-        let out = reader.next_frame(&mut buf).unwrap();
-        let fc = *reader.info().frame_control().expect("an fcTL per frame");
-        assert_eq!(fc.dispose_op, png::DisposeOp::None);
-        let over = fc.blend_op == png::BlendOp::Over;
-        let r = Rect { x: fc.x_offset, y: fc.y_offset, w: fc.width, h: fc.height };
-        assert_eq!((out.width, out.height), (r.w, r.h));
+    let push_chunk = |out: &mut Vec<u8>, tag: &[u8; 4], payload: &[u8]| {
+        out.extend_from_slice(&(payload.len() as u32).to_be_bytes());
+        out.extend_from_slice(tag);
+        out.extend_from_slice(payload);
+        let mut crc_buf = Vec::with_capacity(4 + payload.len());
+        crc_buf.extend_from_slice(tag);
+        crc_buf.extend_from_slice(payload);
+        out.extend_from_slice(&anicraft_xfl::zip::crc32(&crc_buf).to_be_bytes());
+    };
+    for fc in raw_frames {
+        assert_eq!(fc.dispose, 0, "DisposeOp::None");
+        let over = fc.blend == 1;
+        let r = Rect { x: fc.x, y: fc.y, w: fc.w, h: fc.h };
         assert!(r.x + r.w <= w && r.y + r.h <= h);
+        let mut frame_png = Vec::from(&b"\x89PNG\r\n\x1a\n"[..]);
+        let mut f_ihdr = ihdr;
+        f_ihdr[0..4].copy_from_slice(&r.w.to_be_bytes());
+        f_ihdr[4..8].copy_from_slice(&r.h.to_be_bytes());
+        push_chunk(&mut frame_png, b"IHDR", &f_ihdr);
+        push_chunk(&mut frame_png, b"IDAT", &fc.idat);
+        push_chunk(&mut frame_png, b"IEND", &[]);
+        let img = craft_image_codecs::decode_as(craft_image_codecs::Format::Png, &frame_png).unwrap();
+        assert_eq!(img.dimensions(), (r.w, r.h));
+        let buf = img.to_rgba8();
         for y in 0..r.h {
             for x in 0..r.w {
                 let s = ((y * r.w + x) * 4) as usize;
@@ -74,7 +142,7 @@ fn decode_apng(bytes: &[u8]) -> Apng {
         }
         frames.push(ApngFrame { canvas: canvas.clone(), delay: (fc.delay_num, fc.delay_den), rect: r, over });
     }
-    Apng { frames, plays: actl.num_plays, size: (w, h) }
+    Apng { frames, plays, size: (w, h) }
 }
 
 /// The frames an APNG shows, one per movie frame at `ratio` fps (each delay is a whole number
@@ -96,24 +164,17 @@ fn apng_movie(a: &Apng, (p, q): (u64, u64)) -> Vec<Vec<u8>> {
 /// An animated WebP's frames (canvas, milliseconds), loop count, size and whether it has alpha.
 struct Webp {
     frames: Vec<(Vec<u8>, u32)>,
-    looping: image_webp::LoopCount,
+    loop_count: u16,
     size: (u32, u32),
     alpha: bool,
 }
 
 fn decode_webp(bytes: &[u8]) -> Webp {
-    let mut dec = image_webp::WebPDecoder::new(std::io::Cursor::new(bytes)).unwrap();
-    assert!(dec.is_animated());
-    let (w, h) = dec.dimensions();
-    let alpha = dec.has_alpha();
-    let mut buf = vec![0u8; dec.output_buffer_size().unwrap()];
-    let mut frames = Vec::new();
-    for _ in 0..dec.num_frames() {
-        let ms = dec.read_frame(&mut buf).unwrap();
-        let rgba = if alpha { buf.clone() } else { buf.chunks(3).flat_map(|c| [c[0], c[1], c[2], 255]).collect() };
-        frames.push((rgba, ms));
-    }
-    Webp { frames, looping: dec.loop_count(), size: (w, h), alpha }
+    let info = craft_webp::scan(bytes, 1024).unwrap();
+    assert!(!info.frames.is_empty());
+    let decoded = craft_image_codecs::decode_webp_frames(bytes, &craft_image_codecs::DecodeOptions::default()).unwrap();
+    let frames = decoded.into_iter().map(|f| (f.image.to_rgba8(), f.delay_ms)).collect();
+    Webp { frames, loop_count: info.loop_count.unwrap_or(0), size: (info.width, info.height), alpha: info.alpha }
 }
 
 /// The frames a WebP shows, one per movie frame: the frame showing when each starts.
@@ -232,8 +293,7 @@ fn apng_frames_match_the_renderer_exactly() {
             assert!(a.frames.iter().skip(1).all(|f| f.over), "opaque frames blend over");
         }
         // The default image is the first frame, and a plain PNG reader sees it.
-        let first = png::Decoder::new(std::io::Cursor::new(&bytes)).read_info().unwrap().info().frame_control.unwrap();
-        assert_eq!((first.width, first.height, first.x_offset, first.y_offset), (320, 180, 0, 0));
+        assert_eq!((a.frames[0].rect.w, a.frames[0].rect.h, a.frames[0].rect.x, a.frames[0].rect.y), (320, 180, 0, 0));
     }
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -249,9 +309,9 @@ fn webp_frames_match_the_renderer_exactly() {
         let bytes = std::fs::read(&path).unwrap();
         assert!(bytes.starts_with(b"RIFF") && &bytes[8..12] == b"WEBP");
         assert_eq!(u32::from_le_bytes(bytes[4..8].try_into().unwrap()) as usize + 8, bytes.len());
-        let Webp { frames, looping, size, alpha } = decode_webp(&bytes);
+        let Webp { frames, loop_count, size, alpha } = decode_webp(&bytes);
         assert_eq!((size, alpha), ((320, 180), !background));
-        assert_eq!(looping, image_webp::LoopCount::Forever);
+        assert_eq!(loop_count, 0);
         let want = renders(&s.doc, 4, 27, 0.25, background);
         same(&webp_movie(&frames, 24, fps_ratio(s.doc.stage.fps)), &want, "WebP");
     }
@@ -276,9 +336,9 @@ fn identical_frames_merge_into_longer_delays() {
     let webp = dir.join("holds.webp");
     let v = run(&mut s, "file.export_webp", json!({"path": webp.display().to_string(), "loop": false}));
     assert_eq!(v["stored_frames"], 2);
-    let Webp { frames, looping, .. } = decode_webp(&std::fs::read(&webp).unwrap());
+    let Webp { frames, loop_count, .. } = decode_webp(&std::fs::read(&webp).unwrap());
     assert_eq!(frames.len(), 2);
-    assert_eq!(looping, image_webp::LoopCount::Times(std::num::NonZeroU16::new(1).unwrap()));
+    assert_eq!(loop_count, 1);
     same(&webp_movie(&frames, 16, ratio), &want, "held WebP");
     let _ = std::fs::remove_dir_all(&dir);
 }

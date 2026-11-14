@@ -874,26 +874,25 @@ fn export_gif(s: &mut Session, p: &Value) -> Result<Value> {
     let doc = &s.doc;
     let job = s.job.as_deref();
     let delays = gif_delays(n as usize, doc.stage.fps);
-    let frames: Vec<gif::Frame<'static>> = (from..to.saturating_add(1))
+    let frames: Vec<(craft_gif::write::PreparedFrame, u16)> = (from..to.saturating_add(1))
         .into_par_iter()
         .zip(delays.into_par_iter())
         .map(|(f, delay)| {
             let (pm, _) = render(&anicraft_doc::evaluate(doc, f), &view)?;
-            let mut rgba = pm.to_rgba8();
-            let mut frame = gif::Frame::from_rgba_speed(w, h, &mut rgba, 10);
-            frame.delay = delay;
+            let rgba = pm.to_rgba8();
+            let frame = craft_gif::write::prepare_frame(u32::from(w), u32::from(h), rgba, 10)
+                .map_err(|e| EngineError::Format(e.to_string()))?;
             crate::publish::tick(job, 1)?;
-            Ok(frame)
+            Ok((frame, delay))
         })
         .collect::<Result<Vec<_>>>()?;
     let mut bytes = Vec::new();
     {
-        let mut enc = gif::Encoder::new(&mut bytes, w, h, &[]).map_err(|e| EngineError::Format(e.to_string()))?;
-        if looping {
-            enc.set_repeat(gif::Repeat::Infinite).map_err(|e| EngineError::Format(e.to_string()))?;
-        }
-        for fr in &frames {
-            enc.write_frame(fr).map_err(|e| EngineError::Format(e.to_string()))?;
+        let opts = craft_gif::write::Options { loop_forever: looping, ..Default::default() };
+        let mut enc = craft_gif::write::AnimationWriter::new(&mut bytes, u32::from(w), u32::from(h), opts)
+            .map_err(|e| EngineError::Format(e.to_string()))?;
+        for (fr, delay) in frames {
+            enc.write_prepared_frame(fr, delay).map_err(|e| EngineError::Format(e.to_string()))?;
         }
     }
     crate::vfs::write(&path, &bytes)?;

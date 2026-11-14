@@ -101,24 +101,15 @@ impl Bitmap {
 
 /// Decodes PNG data to straight RGBA8, whatever its colour type and bit depth.
 pub fn decode_png(data: &[u8]) -> Option<Pixels> {
-    let mut dec = png::Decoder::new(std::io::Cursor::new(data));
-    dec.set_transformations(png::Transformations::normalize_to_color8());
-    let mut reader = dec.read_info().ok()?;
-    let (w, h) = reader.info().size();
-    if w == 0 || h == 0 || w > MAX_BITMAP_EDGE || h > MAX_BITMAP_EDGE {
+    let mut opts = craft_image_codecs::DecodeOptions::default();
+    opts.limits.max_width = MAX_BITMAP_EDGE;
+    opts.limits.max_height = MAX_BITMAP_EDGE;
+    let img = craft_image_codecs::decode_as_with(craft_image_codecs::Format::Png, data, &opts).ok()?;
+    let (width, height) = img.dimensions();
+    if width == 0 || height == 0 || width > MAX_BITMAP_EDGE || height > MAX_BITMAP_EDGE {
         return None;
     }
-    let mut buf = vec![0u8; reader.output_buffer_size()];
-    let info = reader.next_frame(&mut buf).ok()?;
-    let n = (w * h) as usize;
-    let rgba: Vec<u8> = match info.color_type {
-        png::ColorType::Rgba => buf.get(..n * 4)?.to_vec(),
-        png::ColorType::Rgb => buf.get(..n * 3)?.as_chunks::<3>().0.iter().flat_map(|p| [p[0], p[1], p[2], 255]).collect(),
-        png::ColorType::GrayscaleAlpha => buf.get(..n * 2)?.as_chunks::<2>().0.iter().flat_map(|p| [p[0], p[0], p[0], p[1]]).collect(),
-        png::ColorType::Grayscale => buf.get(..n)?.iter().flat_map(|&g| [g, g, g, 255]).collect(),
-        png::ColorType::Indexed => return None, // expanded by normalize_to_color8
-    };
-    Some(Pixels { width: w, height: h, rgba })
+    Some(Pixels { width, height, rgba: img.to_rgba8() })
 }
 
 /// Why image data can't become a bitmap.
@@ -152,29 +143,21 @@ pub fn image_to_png(data: Vec<u8>) -> Result<Vec<u8>, ImageError> {
     if !data.starts_with(&[0xff, 0xd8, 0xff]) {
         return Err(ImageError::UnknownFormat);
     }
-    use zune_jpeg::zune_core::{bytestream::ZCursor, colorspace::ColorSpace, options::DecoderOptions};
-    let opts = DecoderOptions::default().jpeg_set_out_colorspace(ColorSpace::RGBA);
-    let mut dec = zune_jpeg::JpegDecoder::new_with_options(ZCursor::new(&data), opts);
-    let rgba = dec.decode().map_err(|_| ImageError::Unreadable)?;
-    let (w, h) = dec.dimensions().ok_or(ImageError::Unreadable)?;
-    let (w, h) = (u32::try_from(w).map_err(|_| ImageError::BadSize)?, u32::try_from(h).map_err(|_| ImageError::BadSize)?);
-    if w == 0 || h == 0 || w > MAX_BITMAP_EDGE || h > MAX_BITMAP_EDGE || rgba.len() != w as usize * h as usize * 4 {
+    let mut opts = craft_image_codecs::DecodeOptions::default();
+    opts.limits.max_width = MAX_BITMAP_EDGE;
+    opts.limits.max_height = MAX_BITMAP_EDGE;
+    let img = craft_image_codecs::decode_as_with(craft_image_codecs::Format::Jpeg, &data, &opts).map_err(|_| ImageError::Unreadable)?;
+    let (w, h) = img.dimensions();
+    if w == 0 || h == 0 || w > MAX_BITMAP_EDGE || h > MAX_BITMAP_EDGE {
         return Err(ImageError::BadSize);
     }
-    encode_png(w, h, &rgba).ok_or(ImageError::Unreadable)
+    encode_png(w, h, &img.to_rgba8()).ok_or(ImageError::Unreadable)
 }
 
 /// Straight RGBA8 pixels as PNG.
 fn encode_png(w: u32, h: u32, rgba: &[u8]) -> Option<Vec<u8>> {
-    let mut out = Vec::new();
-    {
-        let mut enc = png::Encoder::new(&mut out, w, h);
-        enc.set_color(png::ColorType::Rgba);
-        enc.set_depth(png::BitDepth::Eight);
-        let mut wr = enc.write_header().ok()?;
-        wr.write_image_data(rgba).ok()?;
-    }
-    Some(out)
+    let img = craft_image_codecs::Image::from_u8(w, h, craft_image_codecs::ChannelLayout::Rgba, rgba.to_vec()).ok()?;
+    craft_image_codecs::encode(&img, craft_image_codecs::Format::Png, &craft_image_codecs::EncodeOptions::default()).ok()
 }
 
 /// Bytes as base64 text in files.
@@ -242,15 +225,7 @@ mod tests {
     use super::*;
 
     fn png_of(w: u32, h: u32, rgba: &[u8]) -> Vec<u8> {
-        let mut out = Vec::new();
-        {
-            let mut enc = png::Encoder::new(&mut out, w, h);
-            enc.set_color(png::ColorType::Rgba);
-            enc.set_depth(png::BitDepth::Eight);
-            let mut wr = enc.write_header().unwrap();
-            wr.write_image_data(rgba).unwrap();
-        }
-        out
+        encode_png(w, h, rgba).unwrap()
     }
 
     #[test]

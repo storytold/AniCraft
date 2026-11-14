@@ -567,14 +567,7 @@ fn what_does_not_carry_across_is_reported() {
 #[test]
 fn bitmaps_and_sounds_are_embedded_once() {
     let mut doc = Document::default();
-    let png = {
-        let mut out = Vec::new();
-        let mut enc = png::Encoder::new(&mut out, 1, 1);
-        enc.set_color(png::ColorType::Rgba);
-        enc.set_depth(png::BitDepth::Eight);
-        enc.write_header().unwrap().write_image_data(&[255, 0, 0, 255]).unwrap();
-        out
-    };
+    let png = crate::encode_png(1, 1, &[255, 0, 0, 255]).unwrap();
     let bitmap = anicraft_doc::Bitmap::from_png(anicraft_doc::BitmapId(50), "dot", png).unwrap();
     doc.bitmaps.push(Arc::new(bitmap));
     let wav = anicraft_doc::audio::wav::encode(8000, 1, &[0.0; 80], anicraft_doc::audio::wav::Bits::Int16);

@@ -26,10 +26,14 @@ anicraft-text = { path = "crates/text" }
 anicraft-plugins = { path = "crates/plugins" }
 anicraft-audio = { path = "crates/audio" }
 anicraft-gpu = { path = "crates/gpu" }
-craft-xfl = { git = "https://github.com/storytold/craft-libs", rev = "b423529943cc8b389e04cde6f08a08b92d0c4dea" }
-craft-xml = { git = "https://github.com/storytold/craft-libs", rev = "de7640a00688cff31470e44c3e43285ed7beb244", version = "=0.1.0" }
 anicraft-guide = { path = "crates/guide" }
-craft-anicraft-format = { git = "https://github.com/storytold/craft-libs", rev = "b77af389f30bb10de10d8436ca9b39fe94e3bb67" }
+craft-anicraft-format = { git = "https://github.com/storytold/craft-libs", rev = "f0f4758c01581d79577b9bf5046c06f4e77b1f18" }
+craft-audio = { git = "https://github.com/storytold/craft-libs", rev = "f0f4758c01581d79577b9bf5046c06f4e77b1f18", default-features = false, features = ["decode", "pcm-encode"] }
+craft-gif = { git = "https://github.com/storytold/craft-libs", rev = "f0f4758c01581d79577b9bf5046c06f4e77b1f18" }
+craft-image-codecs = { git = "https://github.com/storytold/craft-libs", rev = "f0f4758c01581d79577b9bf5046c06f4e77b1f18" }
+craft-webp = { git = "https://github.com/storytold/craft-libs", rev = "f0f4758c01581d79577b9bf5046c06f4e77b1f18" }
+craft-xfl = { git = "https://github.com/storytold/craft-libs", rev = "f0f4758c01581d79577b9bf5046c06f4e77b1f18" }
+craft-xml = { git = "https://github.com/storytold/craft-libs", rev = "f0f4758c01581d79577b9bf5046c06f4e77b1f18" }
 # The GPU stage (ADR 0019) uses the wgpu that eframe's egui-wgpu brings, with the same
 # (default) features, so the tree keeps one wgpu build.
 wgpu = "30"
@@ -42,12 +46,6 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
 rayon = "1"
-png = "0.17"
-# JPEG decoding for imported images (already in the tree; MIT OR Apache-2.0 OR Zlib).
-zune-jpeg = { version = "0.5", default-features = false }
-gif = "0.14"
-# Lossless WebP frames for animated WebP export (pure Rust, MIT OR Apache-2.0; ADR 0063).
-image-webp = "0.2"
 # wgpu is the primary renderer; glow (OpenGL) is the fallback for GPUs/VMs where wgpu fails.
 # Default features off: we skip `links` (opening web links pulls in url/idna/ICU Unicode
 # tables we don't use) and the web-only screen-reader shim. Same set as PhotoCraft, plus glow.
