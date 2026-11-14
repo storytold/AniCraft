@@ -167,6 +167,14 @@ pub struct Prefs {
     /// Whether the rulers, grid and guides show and snap (ADR 0076), kept from session to
     /// session; where the guides are and how they look is the document's.
     pub aids: anicraft_engine::ViewAids,
+    /// The monitor volume for playback, scrubbing, previews and Test Movie (ADR 0095), `0..=1`:
+    /// the listener's, never the document's, and never in an export.
+    pub sound_volume: f32,
+    /// Control › Mute Sounds: playback is silent (the playhead still keeps time).
+    pub sound_muted: bool,
+    /// Control › Audio Scrubbing: a playhead moved while stopped plays a short slice of the
+    /// stream sounds there.
+    pub audio_scrubbing: bool,
 }
 
 /// Most publish presets kept, and the longest name one has.
@@ -233,6 +241,9 @@ impl Default for Prefs {
             test_movie_pos: None,
             workspaces: crate::dock::Workspaces::default(),
             aids: Default::default(),
+            sound_volume: 1.0,
+            sound_muted: false,
+            audio_scrubbing: true,
         }
     }
 }
@@ -323,6 +334,7 @@ impl Prefs {
         let lang = self.language.trim().to_ascii_lowercase();
         self.language = if lang.is_empty() || lang.len() > 35 || !lang.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') { crate::i18n::AUTO.to_string() } else { lang };
         self.shortcuts = crate::keymap::sanitize(std::mem::take(&mut self.shortcuts));
+        self.sound_volume = if self.sound_volume.is_finite() { self.sound_volume.clamp(0.0, 1.0) } else { 1.0 };
         self.autosave_secs = self.autosave_secs.clamp(*AUTOSAVE_SECS_RANGE.start(), *AUTOSAVE_SECS_RANGE.end());
         self.autosave_edits = self.autosave_edits.min(*AUTOSAVE_EDITS_RANGE.end());
         self.onion.before = self.onion.before.min(ONION_REACH_MAX);
