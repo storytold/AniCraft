@@ -227,3 +227,10 @@ fn hostile_input_is_an_error_or_harmless() {
     assert!(i.report.skipped.contains_key("references nested too deeply"));
     assert!(i.report.skipped.contains_key("unreadable paths"));
 }
+
+#[test]
+fn colour_rejects_multiple_leading_hashes() {
+    assert!(color("#abc").is_some());
+    assert!(color("##abc").is_none());
+    assert!(color("##aabbcc").is_none());
+}
