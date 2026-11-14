@@ -179,7 +179,10 @@ impl Lexer<'_> {
                     Some('v') => s.push('\u{b}'),
                     Some('0') if !self.peek().is_some_and(|c| c.is_ascii_digit()) => s.push('\0'),
                     Some('x') => s.push(self.hex(2, here)?),
-                    Some('u') => s.push(self.hex(4, here)?),
+                    Some('u') => {
+                        let unit = self.hex_value(4, here)?;
+                        s.push(self.utf16(unit));
+                    }
                     // A backslash before a line break continues the string on the next line.
                     Some('\n' | '\u{2028}' | '\u{2029}') => {}
                     Some('\r') => {
@@ -195,13 +198,34 @@ impl Lexer<'_> {
     }
 
     fn hex(&mut self, n: usize, at: Pos) -> Result<char, Problem> {
+        let v = self.hex_value(n, at)?;
+        char::from_u32(v).ok_or_else(|| Problem::at(at, "this escape isn't a character"))
+    }
+
+    /// The char for a `\u` code unit; a high surrogate joins a following `\uDC00-DFFF`
+    /// escape, and a lone surrogate becomes U+FFFD.
+    fn utf16(&mut self, unit: u32) -> char {
+        if (0xD800..0xDC00).contains(&unit) {
+            let rest = &self.src.as_bytes()[self.at..];
+            let low = rest.strip_prefix(b"\\u").and_then(|r| r.get(..4)).and_then(|h| h.iter().try_fold(0u32, |v, &b| Some(v * 16 + char::from(b).to_digit(16)?)));
+            if let Some(low) = low.filter(|l| (0xDC00..0xE000).contains(l)) {
+                for _ in 0..6 {
+                    self.bump();
+                }
+                return char::from_u32(0x10000 + ((unit - 0xD800) << 10) + (low - 0xDC00)).unwrap_or('\u{FFFD}');
+            }
+        }
+        char::from_u32(unit).unwrap_or('\u{FFFD}')
+    }
+
+    fn hex_value(&mut self, n: usize, at: Pos) -> Result<u32, Problem> {
         let mut v = 0u32;
         for _ in 0..n {
             let d = self.peek().and_then(|c| c.to_digit(16)).ok_or_else(|| Problem::at(at, "this escape needs hexadecimal digits"))?;
             v = v * 16 + d;
             self.bump();
         }
-        char::from_u32(v).ok_or_else(|| Problem::at(at, "this escape isn't a character"))
+        Ok(v)
     }
 }
 
