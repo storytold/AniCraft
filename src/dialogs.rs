@@ -564,6 +564,23 @@ fn preferences(app: &mut App, ctx: &egui::Context) {
                     form_note(ui, LW, text(Type::Caption, tr!("The timeline always leaves room before frame 1 for the playhead; this adds more. It stays the same at every zoom.")));
                 });
 
+                // Sound while you work (ADR 0095): the listener's, never the document's.
+                section(ui, "prefs_sound", Section::Rule, tr!("Sound"), None, |ui| {
+                    form_row(ui, LW, tr!("Playback volume"), |ui| {
+                        let mut pct = (p.sound_volume * 100.0).round();
+                        if crate::a11y::slider(ui, &mut pct, 0.0..=100.0, tr!("Playback volume"), crate::a11y::SliderLook { suffix: " %", max_decimals: Some(0), step: Some(1.0), logarithmic: false }).changed() {
+                            p.sound_volume = pct / 100.0;
+                        }
+                    });
+                    form_row(ui, LW, tr!("Sounds"), |ui| {
+                        ui.vertical(|ui| {
+                            crate::theme::checkbox(ui, &mut p.sound_muted, text(Type::Body, tr!("Mute sounds")));
+                            crate::theme::checkbox(ui, &mut p.audio_scrubbing, text(Type::Body, tr!("Audio scrubbing")));
+                            form_note(ui, toggle_indent, text(Type::Caption, tr!("Dragging the playhead plays a short slice of the stream sounds under it. Volume and mute are for playback only: exports keep their sound.")));
+                        });
+                    });
+                });
+
                 // Test Movie in a window of its own, or inside the editor (ADR 0062).
                 section(ui, "prefs_test_movie", Section::Rule, tr!("Test Movie"), None, |ui| {
                     form_row(ui, LW, tr!("Window"), |ui| {

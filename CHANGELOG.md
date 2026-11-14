@@ -13,6 +13,17 @@
   * The keyboard shortcut editor moves from F1 to **Ctrl+Alt+Shift+K**, as in Animate.
   * A new chapter, **Using this guide**.
 
+* **Sound output polish** (ADR 0095, M5).
+  * The playhead follows the sound being **heard**: the device's latency is taken off and slow
+    frames are dropped rather than drifting (within a frame over an hour of play in tests).
+  * **Event sounds play to their end** when Loop Playback goes round and after the playhead stops
+    on the last frame; pressing Enter stops all sound.
+  * **Volume and mute** in the timeline header (also **Control › Mute Sounds** and **Preferences ›
+    Sound**): for listening only, kept in your preferences, never in exports.
+  * **Control › Audio Scrubbing** turns scrubbing off or on; a scrub plays at least 1/20 s.
+  * No sound device, or one unplugged mid-play, never crashes: playback carries on silently with a
+    notice and a log line, and the next play opens the device again.
+  * The **web version plays sound** through Web Audio.
 * **Portable copies and AppImage desktop integration** (ADR 0094, M8).
   * **The Windows zip and the Linux tar.gz are portable**: preferences, autosaved work, logs,
     plug-ins, templates, brushes, filter presets, workspaces and recent files stay in a `data`

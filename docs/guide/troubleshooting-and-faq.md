@@ -169,7 +169,6 @@ The web version is the same program running in a browser, with some limits:
 
 | Not in the web version yet | What to do |
 |---|---|
-| Sound playback while editing | Sounds still import and export (WAV, HTML page); play them in the desktop app. |
 | Video export | Export a GIF, animated PNG or WebP, a PNG sequence or an HTML page. |
 | Installing plug-ins and saving your own templates | Use the desktop app (the built-in templates work). |
 | Fonts on your computer | Text uses the built-in faces. |

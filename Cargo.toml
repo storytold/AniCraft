@@ -142,6 +142,9 @@ eframe = { version = "0.36", default-features = false, features = ["accesskit", 
 wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
 js-sys = "0.3"
+# Sound output in the browser (ADR 0095): cpal's Web Audio host, on the wasm-bindgen glue above
+# (Apache-2.0). The AudioContext opens on the first play, which is a click, as browsers ask.
+cpal = { version = "0.18", optional = true, features = ["wasm-bindgen"] }
 # In the browser the page's language (navigator.languages) is the system's.
 sys-locale = { version = "0.3", features = ["js"] }
 web-sys = { version = "0.3", features = ["BeforeUnloadEvent", "Blob", "BlobPropertyBag", "CssStyleDeclaration", "DomRect", "DragEvent", "Document", "Element", "Event", "EventTarget", "File", "FileList", "HtmlAnchorElement", "HtmlCanvasElement", "HtmlElement", "HtmlInputElement", "MediaQueryList", "Navigator", "Storage", "Url", "Window", "console"] }

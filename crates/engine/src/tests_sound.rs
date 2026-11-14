@@ -353,3 +353,53 @@ fn sounds_on_a_button_s_frames_play_in_test_movie_and_stay_out_of_the_soundtrack
     let pcm = audio::decode(&std::fs::read(&out).unwrap()).unwrap();
     assert!(pcm.samples.iter().all(|x| *x == 0.0));
 }
+
+/// Hostile envelopes and settings through `sound.set` (ADR 0095): huge, negative, fractional
+/// and out-of-order times, levels far outside 0–1, too many points, wrong types. Each is
+/// refused or cleaned up; the movie then lays out and mixes at several rates without a panic,
+/// every sample finite.
+#[test]
+fn hostile_envelopes_are_refused_or_tamed_and_always_mix() {
+    let dir = temp_dir("hostile");
+    let (mut s, id) = session_with_sound(&dir);
+    run(&mut s, "sound.place", json!({"sound": id, "frame": 0, "extend": true}));
+    let times = [json!(0), json!(-1), json!(1e308), json!(-1e308), json!(0.0001), json!(3.5), json!(u64::MAX), json!("1"), json!(null)];
+    let levels = [json!(0), json!(1), json!(-5), json!(1e300), json!(0.5), json!(true), json!([]), json!(-0.0)];
+    let mut seed = 7u64;
+    let mut next = move || {
+        seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        (seed >> 33) as usize
+    };
+    let mut accepted = 0;
+    for round in 0..200 {
+        let n = next() % 20;
+        let points: Vec<Value> = (0..n).map(|_| json!({"at": times[next() % times.len()], "left": levels[next() % levels.len()], "right": levels[next() % levels.len()]})).collect();
+        let sync = ["event", "start", "stop", "stream"][round % 4];
+        let repeats = [json!(0), json!(1), json!(65_535), json!(-3), json!(1e12)];
+        let p = match round % 5 {
+            0 => json!({"frame": 0, "envelope": "loud"}),
+            1 => json!({"frame": 0, "envelope": points, "sync": sync, "loop": round % 2 == 0}),
+            2 => json!({"frame": 0, "envelope": points, "repeat": repeats[round % repeats.len()]}),
+            3 => json!({"frame": 0, "envelope": points, "sync": sync}),
+            _ => json!({"frame": 0, "envelope": [{"at": 0, "left": 1, "right": 0}, {"at": 0.1 * n as f64, "left": 0, "right": 1}], "sync": sync}),
+        };
+        if s.execute("sound.set", &p).is_ok() {
+            accepted += 1;
+        }
+        let fs = s.timeline().layers.iter().find_map(|l| l.keyframe_at(0).and_then(|k| k.sound.clone()));
+        if let Some(anicraft_doc::SoundEffect::Custom(points)) = fs.as_ref().map(|f| &f.effect) {
+            assert!(points.len() <= 16, "at most 16 points kept");
+            assert!(points.iter().all(|q| q.at.is_finite() && q.at >= 0.0 && (0.0..=1.0).contains(&q.left) && (0.0..=1.0).contains(&q.right)), "{points:?}");
+        }
+        for rate in [8000, 44_100, 192_000] {
+            let voices = anicraft_doc::sound::voices(&s.doc, rate);
+            let mut out = vec![0.0; 2 * 4096];
+            for start in [0, 1000, u64::from(rate)] {
+                audio::mix(&voices, rate, audio::MixOptions::default(), start, &mut out);
+                assert!(out.iter().all(|x| x.is_finite()), "round {round}, {rate} Hz: {p}");
+            }
+        }
+    }
+    assert!(accepted >= 40, "well-formed envelopes still apply ({accepted})");
+    let _ = std::fs::remove_dir_all(&dir);
+}
