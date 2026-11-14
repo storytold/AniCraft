@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+* **Brushes and erasing, second slice: tilt, textured brushes, erasing inside symbols, profiles
+  in the merge** (ADR 0093, M7).
+  * **Pen tilt** shapes the Brush: Properties › Tilt › **Angle** turns the tip with the way the
+    pen leans, **Width** paints up to twice as wide as it lies down (the Paint Brush too). A
+    mouse is never affected. Desktop systems don't pass tilt on to AniCraft yet, so tilt comes
+    in through `draw.brush` points as `[x, y, pressure, altitude, azimuth]`.
+  * **Textured brushes**, still vector: **Texture** lets a fixed paper grain show through the
+    paint, **Scatter** throws dabs either side of the stroke. New built-in brushes **Charcoal**
+    and **Spatter**.
+  * **Variable-width lines are merged drawing**: a line across one, or the Eraser, cuts it, and
+    each piece keeps the widths it had there. Pressured Paint Brush lines are raw now.
+  * **Erased gradients** keep their gradient in place in every piece.
+  * **Erasing inside symbols**: open a symbol or drawing object (double-click) and the Eraser
+    erases its lines and fills; on the stage it keeps them and the status bar says how.
+  * Fix: the curve fitter could send a handle far off on a tiny, nearly closed stretch.
 * **Shape armatures, second slice: painted weights and reshaping** (ADR 0090, M7).
   * The **Bind** tool's **Paint Weights** (Properties › Bone) brushes a bone's influence onto
     the points of its shape: **Add**, **Subtract** or **Smooth**, with a size (`[` and `]`)

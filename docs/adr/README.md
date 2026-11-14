@@ -23,4 +23,3 @@ has to renumber because another PR merged first.
 | Number | Pull request | Topic |
 |---|---|---|
 | 0037 | #38 (outside contribution) | Interface languages |
-| 0093 | m7/brushes-2 | Tilt, textured brushes, erasing inside symbols, width profiles in the merge |

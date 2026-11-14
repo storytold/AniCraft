@@ -152,6 +152,20 @@ the tip sweeps. A click paints a single dab. The options set the **Size** (or pr
 The last three never cover lines. With
 a pen tablet, pressure sets the width, from 10 % to the full size.
 
+**Texture and scatter.** **Texture** lets a paper grain show through the paint, like charcoal
+on rough paper; the grain stays put on the stage, so strokes laid over each other share it.
+**Scatter** throws dabs either side of the stroke and varies their size, for spatter and
+stipple. Both are still ordinary vector shapes: they merge, erase, scale and export like any
+other paint, and the same stroke always comes out the same. The **Charcoal** and **Spatter**
+brushes in the Brush menu use them.
+
+**Tilt.** Under **Tilt**, **Angle** turns the tip with the pen (the way the pen leans adds to
+the brush's angle, so a flat nib follows your hand), and **Width** paints wider as the pen
+leans, up to twice as wide lying flat. The Paint Brush has **Width**. A mouse is never
+affected. Desktop systems don't pass a pen's tilt on to AniCraft yet, so for now these settings
+work for strokes sent with tilt from scripts and assistants (`draw.brush` points as
+`[x, y, pressure, altitude, azimuth]`), and are kept with your brushes for when they do.
+
 **Snapping while you draw**: with **Snap to Objects** on (the magnet under the tools, or **Ctrl+Shift+/**), the Line,
 Rectangle, Oval, PolyStar and Pen tools snap their points to nearby points, lines and fill
 edges, within 10 screen pixels. A ring shows where a point will snap.
@@ -176,6 +190,10 @@ The **Subselection** tool (**A**) shows and edits the points of a shape:
 A line's thickness can change along its length. To give a line a profile, select it and pick
 one under **Width** in Properties: Uniform, Taper both ends, Taper start, Taper end, Bulge or
 Pinch. Set a profile in a drawing tool's options to make new lines start that way.
+
+Variable-width lines are merged drawing too. A line drawn across one, or the Eraser, cuts it
+into pieces, and each piece keeps the widths it had there: a tapered line cut in the middle
+gives two pieces, each tapering at its outer end.
 
 For finer control, use the **Width** tool (**U**); the pointer becomes a crosshair. Hover over a
 line: a white box on it shows where a drag adds a width point, and the line's points show
@@ -313,7 +331,13 @@ Tick **Faucet** to delete a whole fill or line with a single click. **Erase Ever
 a double-click on the Eraser tool, clears every visible, unlocked layer at the current frame.
 It asks first, and you can undo it.
 
-The Eraser can't erase inside symbols, or lines with a width profile, yet.
+Gradient fills and variable-width lines erase like any other: each piece that's left keeps its
+part of the gradient where it was, and its widths along the line.
+
+On the stage the Eraser leaves symbols and drawing objects alone, and the status bar says so.
+To erase inside one, **double-click** it with the Selection tool (or select it and press
+**Ctrl+E**): it opens in place, and the Eraser works on its own lines and fills. A symbol
+changes everywhere it's used.
 
 ## Transforming artwork
 
@@ -496,6 +520,7 @@ without snapping. Rulers, the grid and guides never show in Test Movie or in exp
 ## Not there yet
 
 Not in AniCraft yet: gradient and bitmap strokes; swatch folders, bitmap swatches and the
-swatches inside Animate files; moving the Envelope's handles from the keyboard; pen tilt for
-brushes; erasing inside symbols; and Animate's ragged, stipple and hatched line styles (drawn
+swatches inside Animate files; moving the Envelope's handles from the keyboard; reading a
+pen's tilt on Windows, macOS and Linux (the brushes' tilt settings are ready for it); bitmap
+and art brushes; and Animate's ragged, stipple and hatched line styles (drawn
 solid when you open an Animate file).
