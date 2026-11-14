@@ -5,7 +5,7 @@ use anicraft_doc::{Document, path_table};
 use anicraft_geom::Path;
 use craft_anicraft_format::PayloadDecoder;
 pub use craft_anicraft_format::{FORMAT_NAME, FORMAT_VERSION, MAX_FILE_BYTES};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 /// AniCraft document deserialization uses its own path-table scope while the shared format crate
@@ -24,10 +24,249 @@ impl PayloadDecoder<Arc<Path>> for DocumentDecoder {
     }
 }
 
+/// Whether `e` has a transform JSON cannot hold (it would write `null`, which no longer loads).
+fn bad_transform(e: &Arc<anicraft_doc::Element>) -> bool {
+    !e.transform.is_finite()
+}
+
+/// Replaces non-finite element transforms with identity, so a ruined transform does not
+/// collapse the element to a point. Returns `None`, without copying, when nothing needs repair;
+/// otherwise only the scenes, items, layers, keyframes and elements that contain one are cloned.
+fn repaired_for_save(doc: &Document) -> Option<Document> {
+    let layer_bad = |l: &Arc<anicraft_doc::Layer>| l.keyframes.iter().any(|k| k.elements.iter().any(bad_transform));
+    let tl_bad = |t: &anicraft_doc::Timeline| t.layers.iter().any(layer_bad);
+    if !doc.timelines().any(tl_bad) {
+        return None;
+    }
+    let fix = |t: &mut anicraft_doc::Timeline| {
+        for l in t.layers.iter_mut().filter(|l| layer_bad(l)) {
+            for k in Arc::make_mut(l).keyframes.iter_mut().filter(|k| k.elements.iter().any(bad_transform)) {
+                for e in Arc::make_mut(k).elements.iter_mut().filter(|e| bad_transform(e)) {
+                    Arc::make_mut(e).transform = anicraft_geom::Affine::IDENTITY;
+                }
+            }
+        }
+    };
+    let mut d = doc.clone();
+    for s in d.scenes.iter_mut().filter(|s| tl_bad(&s.timeline)) {
+        fix(&mut Arc::make_mut(s).timeline);
+    }
+    for s in d.library.iter_mut().filter(|s| tl_bad(&s.timeline)) {
+        fix(&mut Arc::make_mut(s).timeline);
+    }
+    Some(d)
+}
+
+/// Serializer adapter that writes a non-finite `f32`/`f64` as `0.0` instead of `null`, so one
+/// bad number anywhere in the document (a colour, a width, a gradient stop) cannot make the
+/// saved file unloadable. `0.0` is a safe stand-in because loading repairs the fields where it
+/// would not be valid (`Document::sanitize` resets fps and clamps colours, sizes and camera
+/// zoom); element transforms, where zero would collapse the element, are repaired to identity
+/// first by `repaired_for_save`.
+struct Finite<S>(S);
+
+/// A value serialized through [`Finite`].
+struct Val<'a, T: ?Sized>(&'a T);
+
+impl<T: ?Sized + Serialize> Serialize for Val<'_, T> {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        self.0.serialize(Finite(s))
+    }
+}
+
+macro_rules! finite_prims {
+    ($($f:ident($t:ty)),*) => {$(
+        fn $f(self, v: $t) -> Result<Self::Ok, Self::Error> {
+            self.0.$f(v)
+        }
+    )*};
+}
+
+impl<S: serde::Serializer> serde::Serializer for Finite<S> {
+    type Ok = S::Ok;
+    type Error = S::Error;
+    type SerializeSeq = Finite<S::SerializeSeq>;
+    type SerializeTuple = Finite<S::SerializeTuple>;
+    type SerializeTupleStruct = Finite<S::SerializeTupleStruct>;
+    type SerializeTupleVariant = Finite<S::SerializeTupleVariant>;
+    type SerializeMap = Finite<S::SerializeMap>;
+    type SerializeStruct = Finite<S::SerializeStruct>;
+    type SerializeStructVariant = Finite<S::SerializeStructVariant>;
+
+    finite_prims!(
+        serialize_bool(bool),
+        serialize_i8(i8),
+        serialize_i16(i16),
+        serialize_i32(i32),
+        serialize_i64(i64),
+        serialize_i128(i128),
+        serialize_u8(u8),
+        serialize_u16(u16),
+        serialize_u32(u32),
+        serialize_u64(u64),
+        serialize_u128(u128),
+        serialize_char(char),
+        serialize_str(&str),
+        serialize_bytes(&[u8])
+    );
+
+    fn serialize_f32(self, v: f32) -> Result<Self::Ok, Self::Error> {
+        self.0.serialize_f32(if v.is_finite() { v } else { 0.0 })
+    }
+    fn serialize_f64(self, v: f64) -> Result<Self::Ok, Self::Error> {
+        self.0.serialize_f64(if v.is_finite() { v } else { 0.0 })
+    }
+    fn serialize_none(self) -> Result<Self::Ok, Self::Error> {
+        self.0.serialize_none()
+    }
+    fn serialize_some<T: ?Sized + Serialize>(self, v: &T) -> Result<Self::Ok, Self::Error> {
+        self.0.serialize_some(&Val(v))
+    }
+    fn serialize_unit(self) -> Result<Self::Ok, Self::Error> {
+        self.0.serialize_unit()
+    }
+    fn serialize_unit_struct(self, name: &'static str) -> Result<Self::Ok, Self::Error> {
+        self.0.serialize_unit_struct(name)
+    }
+    fn serialize_unit_variant(self, name: &'static str, idx: u32, variant: &'static str) -> Result<Self::Ok, Self::Error> {
+        self.0.serialize_unit_variant(name, idx, variant)
+    }
+    fn serialize_newtype_struct<T: ?Sized + Serialize>(self, name: &'static str, v: &T) -> Result<Self::Ok, Self::Error> {
+        self.0.serialize_newtype_struct(name, &Val(v))
+    }
+    fn serialize_newtype_variant<T: ?Sized + Serialize>(
+        self,
+        name: &'static str,
+        idx: u32,
+        variant: &'static str,
+        v: &T,
+    ) -> Result<Self::Ok, Self::Error> {
+        self.0.serialize_newtype_variant(name, idx, variant, &Val(v))
+    }
+    fn serialize_seq(self, len: Option<usize>) -> Result<Self::SerializeSeq, Self::Error> {
+        self.0.serialize_seq(len).map(Finite)
+    }
+    fn serialize_tuple(self, len: usize) -> Result<Self::SerializeTuple, Self::Error> {
+        self.0.serialize_tuple(len).map(Finite)
+    }
+    fn serialize_tuple_struct(self, name: &'static str, len: usize) -> Result<Self::SerializeTupleStruct, Self::Error> {
+        self.0.serialize_tuple_struct(name, len).map(Finite)
+    }
+    fn serialize_tuple_variant(
+        self,
+        name: &'static str,
+        idx: u32,
+        variant: &'static str,
+        len: usize,
+    ) -> Result<Self::SerializeTupleVariant, Self::Error> {
+        self.0.serialize_tuple_variant(name, idx, variant, len).map(Finite)
+    }
+    fn serialize_map(self, len: Option<usize>) -> Result<Self::SerializeMap, Self::Error> {
+        self.0.serialize_map(len).map(Finite)
+    }
+    fn serialize_struct(self, name: &'static str, len: usize) -> Result<Self::SerializeStruct, Self::Error> {
+        self.0.serialize_struct(name, len).map(Finite)
+    }
+    fn serialize_struct_variant(
+        self,
+        name: &'static str,
+        idx: u32,
+        variant: &'static str,
+        len: usize,
+    ) -> Result<Self::SerializeStructVariant, Self::Error> {
+        self.0.serialize_struct_variant(name, idx, variant, len).map(Finite)
+    }
+    fn is_human_readable(&self) -> bool {
+        self.0.is_human_readable()
+    }
+}
+
+impl<S: serde::ser::SerializeSeq> serde::ser::SerializeSeq for Finite<S> {
+    type Ok = S::Ok;
+    type Error = S::Error;
+    fn serialize_element<T: ?Sized + Serialize>(&mut self, v: &T) -> Result<(), Self::Error> {
+        self.0.serialize_element(&Val(v))
+    }
+    fn end(self) -> Result<Self::Ok, Self::Error> {
+        self.0.end()
+    }
+}
+impl<S: serde::ser::SerializeTuple> serde::ser::SerializeTuple for Finite<S> {
+    type Ok = S::Ok;
+    type Error = S::Error;
+    fn serialize_element<T: ?Sized + Serialize>(&mut self, v: &T) -> Result<(), Self::Error> {
+        self.0.serialize_element(&Val(v))
+    }
+    fn end(self) -> Result<Self::Ok, Self::Error> {
+        self.0.end()
+    }
+}
+impl<S: serde::ser::SerializeTupleStruct> serde::ser::SerializeTupleStruct for Finite<S> {
+    type Ok = S::Ok;
+    type Error = S::Error;
+    fn serialize_field<T: ?Sized + Serialize>(&mut self, v: &T) -> Result<(), Self::Error> {
+        self.0.serialize_field(&Val(v))
+    }
+    fn end(self) -> Result<Self::Ok, Self::Error> {
+        self.0.end()
+    }
+}
+impl<S: serde::ser::SerializeTupleVariant> serde::ser::SerializeTupleVariant for Finite<S> {
+    type Ok = S::Ok;
+    type Error = S::Error;
+    fn serialize_field<T: ?Sized + Serialize>(&mut self, v: &T) -> Result<(), Self::Error> {
+        self.0.serialize_field(&Val(v))
+    }
+    fn end(self) -> Result<Self::Ok, Self::Error> {
+        self.0.end()
+    }
+}
+impl<S: serde::ser::SerializeMap> serde::ser::SerializeMap for Finite<S> {
+    type Ok = S::Ok;
+    type Error = S::Error;
+    fn serialize_key<T: ?Sized + Serialize>(&mut self, k: &T) -> Result<(), Self::Error> {
+        self.0.serialize_key(&Val(k))
+    }
+    fn serialize_value<T: ?Sized + Serialize>(&mut self, v: &T) -> Result<(), Self::Error> {
+        self.0.serialize_value(&Val(v))
+    }
+    fn end(self) -> Result<Self::Ok, Self::Error> {
+        self.0.end()
+    }
+}
+impl<S: serde::ser::SerializeStruct> serde::ser::SerializeStruct for Finite<S> {
+    type Ok = S::Ok;
+    type Error = S::Error;
+    fn serialize_field<T: ?Sized + Serialize>(&mut self, key: &'static str, v: &T) -> Result<(), Self::Error> {
+        self.0.serialize_field(key, &Val(v))
+    }
+    fn skip_field(&mut self, key: &'static str) -> Result<(), Self::Error> {
+        self.0.skip_field(key)
+    }
+    fn end(self) -> Result<Self::Ok, Self::Error> {
+        self.0.end()
+    }
+}
+impl<S: serde::ser::SerializeStructVariant> serde::ser::SerializeStructVariant for Finite<S> {
+    type Ok = S::Ok;
+    type Error = S::Error;
+    fn serialize_field<T: ?Sized + Serialize>(&mut self, key: &'static str, v: &T) -> Result<(), Self::Error> {
+        self.0.serialize_field(key, &Val(v))
+    }
+    fn skip_field(&mut self, key: &'static str) -> Result<(), Self::Error> {
+        self.0.skip_field(key)
+    }
+    fn end(self) -> Result<Self::Ok, Self::Error> {
+        self.0.end()
+    }
+}
+
 pub fn to_json(doc: &Document) -> Result<String, EngineError> {
+    let repaired = repaired_for_save(doc);
+    let doc = repaired.as_ref().unwrap_or(doc);
     let paths = path_table::build_table(doc);
     let generator = format!("AniCraft {}", env!("CARGO_PKG_VERSION"));
-    path_table::write_with_paths(&paths, || craft_anicraft_format::write(&generator, &paths, doc)).map_err(|e| EngineError::Format(e.to_string()))
+    path_table::write_with_paths(&paths, || craft_anicraft_format::write(&generator, &paths, &Val(doc))).map_err(|e| EngineError::Format(e.to_string()))
 }
 
 pub fn from_json(text: &str) -> Result<Document, EngineError> {
@@ -65,6 +304,39 @@ pub fn save(doc: &Document, path: &std::path::Path) -> Result<(), EngineError> {
 mod tests {
     use super::*;
     use anicraft_doc::sample;
+
+    #[test]
+    fn non_finite_element_transform_still_reopens() {
+        for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            let mut d = sample::demo();
+            let l = Arc::make_mut(&mut Arc::make_mut(&mut d.scenes[0]).timeline.layers[0]);
+            let k = Arc::make_mut(&mut l.keyframes[0]);
+            Arc::make_mut(&mut k.elements[0]).transform.m[4] = bad;
+            let back = from_json(&to_json(&d).unwrap()).unwrap();
+            let e = &back.timeline(0).layers[0].keyframes[0].elements[0];
+            assert_eq!(e.transform, anicraft_geom::Affine::IDENTITY);
+        }
+    }
+
+    #[test]
+    fn non_finite_stage_fps_still_reopens_as_default() {
+        for bad in [f32::NAN, f32::INFINITY] {
+            let mut d = sample::demo();
+            d.stage.fps = bad;
+            let back = from_json(&to_json(&d).unwrap()).unwrap();
+            assert_eq!(back.stage.fps, 24.0);
+        }
+    }
+
+    #[test]
+    fn non_finite_colour_still_reopens() {
+        for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            let mut d = sample::demo();
+            d.stage.background.r = bad;
+            let back = from_json(&to_json(&d).unwrap()).unwrap();
+            assert_eq!(back.stage.background.r, 0.0);
+        }
+    }
 
     #[test]
     fn round_trip_is_lossless() {
