@@ -19,6 +19,23 @@
     public format description through the CPU oracle at every frame, for the sample scenes, a
     movie of every tween and ease, and the XFL corpus.
 
+* **Plug-ins, second slice: export formats and eases** (ADR 0088, M6).
+  * **Export-format plug-ins** appear in **File › Export** below the built-in formats. Their
+    **Export** window has the plug-in's options, the frames and the file, then a progress bar
+    and **Cancel** while the export runs in the background. The plug-in gets the movie's
+    evaluated frames, never the document, and AniCraft writes the file it returns (at most
+    64 MB). Replacing a file asks first.
+  * **Ease plug-ins** add eases to every ease menu, under **Plug-in eases**. AniCraft samples
+    each ease once when the plug-in loads, and a tween keeps the curve, so the movie plays the
+    same without the plug-in.
+  * Hostile plug-ins stop with a clear message: endless loops, huge or misplaced output, eases
+    that give NaN, leave −10..10 or miss 0 and 1 at their ends.
+  * Samples: **Plain Text Frames** (an exporter) and **Stepped Eases** (Stepped 2, 4, 8, Smooth
+    Steps 4), built and run in CI; the guest SDK gains `exporter!`, `ease!`, `movie()` and
+    `frame()`.
+  * Headless: `file.export_plugin`, `file.export_formats`, `{"plugin", "ease"}` and
+    `{"sampled"}` easing params, plug-in eases in `ease.list`; `anicraft-cli export --format
+    <id>` (built-in formats too) and `anicraft-cli formats`.
 * **Dockable panels, second slice** (ADR 0087, M8).
   * **The tools move like any panel**: drag the grip at the top of the tools (or use its
     menu) to put them in a slim bar on any side, as a tab in a dock (laid out in as many

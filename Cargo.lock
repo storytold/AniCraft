@@ -238,6 +238,7 @@ dependencies = [
  "sys-locale",
  "wasm-bindgen",
  "wasm-bindgen-futures",
+ "wat",
  "web-sys",
  "web-time",
  "winreg",
@@ -270,6 +271,7 @@ dependencies = [
  "anicraft-guide",
  "anicraft-render",
  "serde_json",
+ "wat",
 ]
 
 [[package]]

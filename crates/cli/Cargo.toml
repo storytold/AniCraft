@@ -22,5 +22,9 @@ anicraft-geom.workspace = true
 anicraft-guide.workspace = true
 serde_json.workspace = true
 
+[dev-dependencies]
+# Exporter plug-in fixtures written in WebAssembly text (Apache-2.0 WITH LLVM-exception).
+wat = "1.228"
+
 [lints]
 workspace = true

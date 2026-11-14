@@ -9,7 +9,7 @@
 use serde_json::{Map, Value};
 use wasmi::{Caller, Config, EnforcedLimits, Engine, Extern, ExternType, Instance, Linker, Memory, Module, Store, StoreLimits, StoreLimitsBuilder, TypedFunc, TypedResumableCall, Val, WasmParams, WasmResults};
 
-use crate::manifest::{MAX_MANIFEST_BYTES, Manifest};
+use crate::manifest::{Kind, MAX_MANIFEST_BYTES, Manifest};
 use crate::{Error, Host, Result};
 
 /// The plug-in ABI version this host implements (`ac_abi_version` must return it).
@@ -23,6 +23,24 @@ const IMPORTS: [(&str, usize, usize); 2] = [("call", 2, 1), ("response", 2, 1)];
 const FUEL_SLICE: u64 = 10_000_000;
 /// Longest log line kept, in characters.
 const MAX_LOG_CHARS: usize = 500;
+
+/// Samples AniCraft takes of each plug-in ease, at `t = i / (EASE_SAMPLES − 1)` (ADR 0088).
+pub const EASE_SAMPLES: usize = 257;
+/// Values a plug-in ease may reach (as custom eases: overshoot, never unbounded).
+pub const MAX_EASE_VALUE: f64 = 10.0;
+/// How far a plug-in ease may miss 0 at t = 0 and 1 at t = 1 (the ends are then pinned).
+const EASE_END_TOLERANCE: f64 = 1e-3;
+
+/// One plug-in ease, sampled when the plug-in loaded: `values[i]` is the eased progress at
+/// `t = i / (values.len() − 1)`, finite, within ±[`MAX_EASE_VALUE`], from exactly 0 to exactly 1.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SampledCurve {
+    /// The ease's id within the plug-in.
+    pub id: String,
+    /// The name the ease menu shows.
+    pub name: String,
+    pub values: Vec<f32>,
+}
 
 /// Resource limits for loading and running plug-ins.
 #[derive(Clone, Debug, PartialEq)]
@@ -49,6 +67,8 @@ pub struct Limits {
     pub max_params_bytes: usize,
     /// Most log lines kept from one run (later ones are counted, not kept).
     pub max_log_lines: usize,
+    /// Largest file an exporter may return from `ac_export`.
+    pub max_output_bytes: usize,
 }
 
 impl Limits {
@@ -68,6 +88,13 @@ impl Limits {
             ..Limits::default()
         }
     }
+
+    /// The limits of one export (ADR 0088). It runs on a worker thread with a progress bar and
+    /// Cancel, so it may take much longer than a command (about 100 s of computing, 10 minutes
+    /// in all); one request per frame, and bigger answers (a busy frame's paths).
+    pub fn exporter() -> Limits {
+        Limits { fuel: 50_000_000_000, wall_time_ms: 600_000, max_calls: 1_000_000, max_response_bytes: 32 << 20, ..Limits::default() }
+    }
 }
 
 impl Default for Limits {
@@ -84,6 +111,7 @@ impl Default for Limits {
             max_total_request_bytes: 64 << 20,
             max_params_bytes: 64 << 10,
             max_log_lines: 200,
+            max_output_bytes: 64 << 20,
         }
     }
 }
@@ -111,6 +139,8 @@ pub struct Plugin {
     limits: Limits,
     size: usize,
     source: Option<std::path::PathBuf>,
+    /// An ease plug-in's eases, sampled at load (empty for other kinds).
+    eases: Vec<SampledCurve>,
 }
 
 impl std::fmt::Debug for Plugin {
@@ -186,6 +216,14 @@ impl Deadline {
     }
 }
 
+/// Stops a run its host has cancelled (checked at every request and every fuel slice).
+fn cancelled(host: &Option<(&mut dyn Host, &mut RunReport)>) -> Result<()> {
+    match host {
+        Some((h, _)) if h.cancelled() => Err(Error::Cancelled),
+        _ => Ok(()),
+    }
+}
+
 fn wasm_err(e: wasmi::Error) -> Error {
     if e.as_trap_code() == Some(wasmi::TrapCode::OutOfFuel) { Error::Limit("instruction budget".into()) } else { Error::Trap(e.to_string()) }
 }
@@ -251,7 +289,7 @@ impl Plugin {
                 return Err(Error::Abi(format!("`{IMPORT_MODULE}.{}` must be a function ({}) -> i32", imp.name(), vec!["i32"; *np].join(", "))));
             }
         }
-        let mut p = Plugin { manifest: placeholder_manifest(), engine, module, limits, size: bytes.len(), source: None };
+        let mut p = Plugin { manifest: placeholder_manifest(), engine, module, limits, size: bytes.len(), source: None, eases: Vec::new() };
         let deadline = Deadline::new(p.limits.wall_time_ms);
         let load_fuel = p.limits.fuel / 10;
         let mut live = p.instantiate(load_fuel)?;
@@ -267,10 +305,57 @@ impl Plugin {
             return Err(Error::Manifest(format!("it is {len} bytes (limit {MAX_MANIFEST_BYTES})")));
         }
         p.manifest = Manifest::parse(live.bytes(ptr, len, "ac_manifest")?)?;
-        // The other exports must exist with the right types.
-        live.func::<i32, i32>("ac_alloc")?;
-        live.func::<(i32, i32), i32>("ac_run")?;
+        // The other exports must exist with the right types, per kind.
+        match p.manifest.kind {
+            Kind::Command | Kind::FrameScript => {
+                live.func::<i32, i32>("ac_alloc")?;
+                live.func::<(i32, i32), i32>("ac_run")?;
+            }
+            Kind::Exporter => {
+                live.func::<i32, i32>("ac_alloc")?;
+                live.func::<(i32, i32), i64>("ac_export")?;
+            }
+            Kind::Ease => p.eases = p.sample_eases(&mut live, load_fuel, &deadline)?,
+        }
         Ok(p)
+    }
+
+    /// Samples every declared ease through `ac_ease(index, t) -> value` (both `f64`), on what
+    /// is left of the loading budget. The ease can't make host calls, so it is a function of
+    /// `t` alone; a value that isn't finite, leaves ±[`MAX_EASE_VALUE`] or misses the ends
+    /// stops the load, naming the ease, the time and the value.
+    fn sample_eases(&self, live: &mut Live, fuel: u64, deadline: &Deadline) -> Result<Vec<SampledCurve>> {
+        let f: TypedFunc<(i32, f64), f64> = live.func("ac_ease")?;
+        let mut out = Vec::with_capacity(self.manifest.eases.len());
+        for (i, decl) in self.manifest.eases.iter().enumerate() {
+            let mut values = Vec::with_capacity(EASE_SAMPLES);
+            for k in 0..EASE_SAMPLES {
+                let t = k as f64 / (EASE_SAMPLES - 1) as f64;
+                let left = fuel.saturating_sub(live.used);
+                let v = self.call(live, &f, (i as i32, t), left, deadline, &mut None, &self.limits)?;
+                let bad = |what: String| Error::Failed(format!("ease “{}” {what} at t = {t:.3}", decl.name));
+                if !v.is_finite() {
+                    return Err(bad(format!("gave {v}, not a number")));
+                }
+                if v.abs() > MAX_EASE_VALUE {
+                    return Err(bad(format!("gave {v:.3}, outside −{MAX_EASE_VALUE}..{MAX_EASE_VALUE}")));
+                }
+                let end = if k == 0 { Some(0.0) } else if k == EASE_SAMPLES - 1 { Some(1.0) } else { None };
+                if let Some(e) = end
+                    && (v - e).abs() > EASE_END_TOLERANCE
+                {
+                    return Err(bad(format!("gave {v:.3}; an ease starts at 0 and ends at 1, so a tween begins and ends on its keyframes")));
+                }
+                values.push(end.unwrap_or(v) as f32);
+            }
+            out.push(SampledCurve { id: decl.id.clone(), name: decl.name.clone(), values });
+        }
+        Ok(out)
+    }
+
+    /// An ease plug-in's eases, as sampled when it loaded (empty for other kinds).
+    pub fn eases(&self) -> &[SampledCurve] {
+        &self.eases
     }
 
     pub fn manifest(&self) -> &Manifest {
@@ -333,7 +418,8 @@ impl Plugin {
                         return Err(Error::Trap(inv.host_error().to_string()));
                     }
                     deadline.check()?;
-                    let request = live.store.data_mut().pending.take().unwrap_or_default();
+                    cancelled(host)?;
+                    let request =live.store.data_mut().pending.take().unwrap_or_default();
                     let response = match host {
                         Some((h, report)) => self.answer(&mut **h, report, &request, limits)?,
                         None => return Err(Error::Abi("host calls are allowed only while the plug-in runs (not while loading)".into())),
@@ -348,6 +434,7 @@ impl Plugin {
                         return Err(Error::Limit("instruction budget".into()));
                     }
                     deadline.check()?;
+                    cancelled(host)?;
                     let give = left.min(FUEL_SLICE.max(need));
                     left -= give;
                     live.store.set_fuel(give).map_err(wasm_err)?;
@@ -440,6 +527,51 @@ impl Plugin {
     }
 }
 
+impl Plugin {
+    /// Runs an exporter once in a fresh instance (ADR 0088): `ac_export(params_ptr, params_len)`
+    /// gets the validated options and returns `(len << 32) | ptr` of the file's bytes, or a
+    /// negative number on failure (the last log line says why). The host answers the frame
+    /// requests; `limits` are the run's ([`Limits::exporter`]), and the file may be at most
+    /// `limits.max_output_bytes`.
+    pub fn export(&self, host: &mut dyn Host, options: &Map<String, Value>, limits: &Limits) -> Result<(Vec<u8>, RunReport)> {
+        if self.manifest.kind != Kind::Exporter {
+            return Err(Error::Abi(format!("{} is not an exporter", self.manifest.name)));
+        }
+        let deadline = Deadline::new(limits.wall_time_ms);
+        let text = serde_json::to_vec(options).map_err(|e| Error::Params(e.to_string()))?;
+        if text.len() > limits.max_params_bytes {
+            return Err(Error::Params(format!("{} bytes of options (limit {})", text.len(), limits.max_params_bytes)));
+        }
+        let mut live = self.instantiate(limits.fuel)?;
+        let alloc: TypedFunc<i32, i32> = live.func("ac_alloc")?;
+        let export: TypedFunc<(i32, i32), i64> = live.func("ac_export")?;
+        let mut report = RunReport::default();
+        let ptr = self.call(&mut live, &alloc, text.len().max(1) as i32, limits.fuel / 10, &deadline, &mut None, limits)? as u32;
+        if ptr == 0 {
+            return Err(Error::Failed("ac_alloc returned 0 (out of memory)".into()));
+        }
+        let (p, l) = (ptr as usize, text.len());
+        live.memory.data_mut(&mut live.store).get_mut(p..p.saturating_add(l)).ok_or_else(|| Error::Abi("ac_alloc returned a block outside memory".into()))?.copy_from_slice(&text);
+        live.used = 0;
+        let packed = {
+            let mut h: Option<(&mut dyn Host, &mut RunReport)> = Some((host, &mut report));
+            self.call(&mut live, &export, (ptr as i32, l as i32), limits.fuel, &deadline, &mut h, limits)
+        };
+        report.fuel = live.used;
+        let packed = packed?;
+        if packed < 0 {
+            let why = report.log.last().map_or_else(String::new, |m| format!(": {m}"));
+            return Err(Error::Failed(format!("{} could not export{why}", self.manifest.name)));
+        }
+        let (ptr, len) = ((packed as u64 & 0xffff_ffff) as u32, ((packed as u64) >> 32) as u32);
+        if len as usize > limits.max_output_bytes {
+            return Err(Error::Limit(format!("output size: it returned {} MiB and an export may be at most {} MiB", (len as usize) >> 20, limits.max_output_bytes >> 20)));
+        }
+        let bytes = live.bytes(ptr, len, "the exported file")?.to_vec();
+        Ok((bytes, report))
+    }
+}
+
 fn placeholder_manifest() -> Manifest {
     Manifest {
         id: String::new(),
@@ -451,5 +583,7 @@ fn placeholder_manifest() -> Manifest {
         selection: crate::SelectionNeed::Optional,
         params: Vec::new(),
         entries: Vec::new(),
+        format: None,
+        eases: Vec::new(),
     }
 }

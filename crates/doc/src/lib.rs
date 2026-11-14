@@ -35,7 +35,7 @@ pub mod swatch;
 
 pub use filter::{Filter, FilterSide, MAX_BLUR, MAX_QUALITY, MAX_RAMP_STOPS, REST_SNAP, default_bevel_ramp, default_glow_ramp, pinned_stop, ramp_at};
 pub use bitmap::{Bitmap, BitmapId, ImageError, MAX_BITMAP_EDGE, Pixels, base64_decode, base64_encode, decode_png, image_to_png};
-pub use easing::{CustomEase, EaseDir, EaseFamily, EasePoint, Easing, Handle, MAX_EASE_NAME, MAX_EASE_POINTS, MAX_EASE_Y, MAX_SAVED_EASES, SavedEase, ease_name};
+pub use easing::{CustomEase, EaseDir, EaseFamily, EasePoint, Easing, Handle, MAX_EASE_NAME, MAX_EASE_POINTS, MAX_EASE_SAMPLES, MAX_EASE_Y, MAX_SAVED_EASES, SampledEase, SavedEase, ease_name};
 pub use color_effect::{ADVANCED_ADD, ADVANCED_MUL, ColorEffect, ColorStyle, ColorTransform};
 pub use hints::{HINT_TOLERANCE, HintSide, MAX_SHAPE_HINTS, ShapeHint, hint_index, hint_letter, nearest_outline, placed_on, shapes_centre};
 pub use library::{FolderId, LibraryEntry, LibraryFolder, LibraryItem, LibraryTree, NameError};

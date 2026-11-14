@@ -1,0 +1,15 @@
+[package]
+name = "anicraft-plugin-text-export"
+description = "Sample AniCraft exporter plug-in: the movie as readable text, one block per frame"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+# The rlib lets `cargo test` run the pure parts natively.
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+anicraft-plugin-sdk.workspace = true
+serde_json.workspace = true

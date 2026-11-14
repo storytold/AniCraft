@@ -563,6 +563,10 @@ fn registry_items(app: &mut App, ui: &mut egui::Ui, top: &str, cmds: &[CommandSp
             }
             // View › Snapping also has Snap to Grid and Snap to Guides, where Animate users
             // look for them (ADR 0076); they live in View › Grid and View › Guides too.
+            // Exporter plug-ins' formats, below the built-in ones (ADR 0088).
+            if path == "File/Export" {
+                crate::plugin_export_ui::menu_items(app, ui);
+            }
             if path == "View/Snapping" {
                 for id in ["view.grid_snap", "view.guides_snap"] {
                     cmd_item(app, ui, id);

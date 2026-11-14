@@ -196,6 +196,8 @@ pub fn describe(s: &Session, p: &Plugin) -> Value {
         "description": m.description,
         "kind": m.kind.key(),
         "entries": m.entries,
+        "format": m.format.as_ref().map(|f| json!({"name": f.name, "extension": f.extension})),
+        "eases": p.eases().iter().map(|c| json!({"id": c.id, "name": c.name})).collect::<Vec<_>>(),
         "selection": if m.selection == SelectionNeed::Required { "required" } else { "optional" },
         "params": m.params.iter().map(|(k, spec)| param_json(k, spec)).collect::<Vec<_>>(),
         "notation": m.params_notation(),
@@ -231,8 +233,11 @@ fn run(s: &mut Session, p: &Value) -> Result<Value> {
     let id = str_req(p, "id")?;
     let plugin = s.plugins.get(id).ok_or_else(|| EngineError::State(format!("no plug-in “{id}” is installed (see plugin.list)")))?;
     let m = plugin.manifest();
-    if m.kind == anicraft_plugins::Kind::FrameScript {
-        return Err(EngineError::State(format!("{} is a frame script: it runs while the movie plays, from a keyframe (Window › Actions)", m.name)));
+    match m.kind {
+        anicraft_plugins::Kind::Command => {}
+        anicraft_plugins::Kind::FrameScript => return Err(EngineError::State(format!("{} is a frame script: it runs while the movie plays, from a keyframe (Window › Actions)", m.name))),
+        anicraft_plugins::Kind::Exporter => return Err(EngineError::State(format!("{} is an export format: use File › Export, or file.export_plugin {{\"format\": \"{}\", \"path\": …}}", m.name, m.id))),
+        anicraft_plugins::Kind::Ease => return Err(EngineError::State(format!("{} adds eases: pick one in a tween's ease menu, or ease.set {{\"easing\": {{\"plugin\": \"{}\", \"ease\": …}}}}", m.name, m.id))),
     }
     if m.selection == SelectionNeed::Required && s.selection.is_empty() {
         return Err(EngineError::State(format!("{} works on the selection: select some artwork first", m.name)));

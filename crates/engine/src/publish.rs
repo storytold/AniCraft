@@ -72,7 +72,7 @@ impl Control {
     pub fn progress(&self) -> (u64, u64) {
         (self.done.load(Ordering::Relaxed), self.total.load(Ordering::Relaxed))
     }
-    fn begin(&self, total: u64) {
+    pub(crate) fn begin(&self, total: u64) {
         self.done.store(0, Ordering::Relaxed);
         self.total.store(total, Ordering::Relaxed);
     }
