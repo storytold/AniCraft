@@ -3,8 +3,8 @@
 use crate::EngineError;
 use anicraft_doc::{Document, path_table};
 use anicraft_geom::Path;
-pub use craft_anicraft_format::{FORMAT_NAME, FORMAT_VERSION, MAX_FILE_BYTES};
 use craft_anicraft_format::PayloadDecoder;
+pub use craft_anicraft_format::{FORMAT_NAME, FORMAT_VERSION, MAX_FILE_BYTES};
 use serde::Deserialize;
 use std::sync::Arc;
 
