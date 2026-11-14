@@ -51,7 +51,8 @@ Store) reject metadata errors at submission time, which is late.
      and dollar signs in folder names work. Paths with line breaks or that aren't UTF-8 are
      refused.
    * **Never system folders:** `data_home` must be absolute and outside `/usr`, `/etc`, `/opt`,
-     `/var`, `/bin`, `/sbin`, `/lib`, `/lib64`, `/boot`, `/snap`. The desktop app passes
+     `/var/lib` (Flatpak and snap exports; not all of `/var`, where macOS keeps temporary
+     folders), `/bin`, `/sbin`, `/lib`, `/lib64`, `/boot`, `/snap`. The desktop app passes
      `$XDG_DATA_HOME` (a relative one is ignored, per the XDG Base Directory spec) or
      `~/.local/share`.
    * **Idempotent and safe to undo:** writing again rewrites only files that differ (temp file +

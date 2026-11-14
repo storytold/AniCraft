@@ -63,7 +63,7 @@ const ICONS: [(&str, &str, &[u8]); 8] = [
 const MAX_PATH_BYTES: usize = 4096;
 
 /// System folders desktop integration never writes into, whatever it is told: packages own them.
-const SYSTEM: [&str; 10] = ["/usr", "/etc", "/opt", "/var", "/bin", "/sbin", "/lib", "/lib64", "/boot", "/snap"];
+const SYSTEM: [&str; 10] = ["/usr", "/etc", "/opt", "/var/lib", "/bin", "/sbin", "/lib", "/lib64", "/boot", "/snap"];
 
 /// `path` as text a desktop entry can hold: UTF-8, absolute, no control characters, bounded.
 fn entry_text<'a>(path: &'a Path, what: &str) -> Result<&'a str> {

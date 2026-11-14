@@ -290,4 +290,87 @@ mod tests {
         assert_eq!(app.desktop.as_ref().map(|d| d.entry.clone()), Some(Entry::ThisCopy));
         let _ = std::fs::remove_dir_all(&d.data_home);
     }
+
+    fn input(events: Vec<egui::Event>) -> egui::RawInput {
+        egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1600.0, 940.0))), events, ..Default::default() }
+    }
+
+    /// Draws `n` whole frames of the app, the last with `events`.
+    fn frames(ctx: &egui::Context, app: &mut App, n: usize, events: Vec<egui::Event>) {
+        for i in 0..n {
+            let mut out = ctx.run_ui(input(if i + 1 == n { events.clone() } else { vec![] }), |ui| app.frame(ui));
+            out.textures_delta.clear();
+        }
+    }
+
+    fn click(at: egui::Pos2) -> Vec<egui::Event> {
+        let b = |pressed| egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+        vec![egui::Event::PointerMoved(at), b(true), b(false)]
+    }
+
+    #[test]
+    fn the_offer_card_adds_on_a_click_and_is_answered_once() {
+        let ctx = egui::Context::default();
+        let mut app = App::with_context(&ctx, anicraft_engine::Session::default(), Some(PathBuf::from("unused.png")));
+        app.open_panel(Some("desktopoffer"));
+        let data = app.desktop.as_ref().map(|d| d.data_home.clone()).unwrap();
+        assert!(app.desktop.as_ref().is_some_and(|d| d.offer));
+        frames(&ctx, &mut app, 3, vec![]);
+        let card = ctx.memory(|m| m.area_rect(egui::Id::new("desktop_offer"))).expect("the card is drawn");
+        // Add to Menu: the first button on the card's bottom row.
+        frames(&ctx, &mut app, 2, click(egui::pos2(card.min.x + 40.0, card.max.y - 24.0)));
+        assert!(app.prefs.desktop_offered, "answered");
+        assert_eq!(app.desktop.as_ref().map(|d| (d.offer, d.entry.clone())), Some((false, Entry::ThisCopy)));
+        assert!(data.join("applications/ai.storyteller.anicraft.desktop").is_file());
+        let _ = std::fs::remove_dir_all(&data);
+    }
+
+    #[test]
+    fn not_now_puts_the_card_away_for_good() {
+        let ctx = egui::Context::default();
+        let mut app = App::with_context(&ctx, anicraft_engine::Session::default(), Some(PathBuf::from("unused.png")));
+        // Its own sample folder: tests run side by side.
+        let d = sample("notnow-test").unwrap();
+        let _ = std::fs::remove_dir_all(&d.data_home);
+        start_with(&mut app, d, false);
+        frames(&ctx, &mut app, 3, vec![]);
+        let card = ctx.memory(|m| m.area_rect(egui::Id::new("desktop_offer"))).expect("the card is drawn");
+        frames(&ctx, &mut app, 2, click(egui::pos2(card.min.x + 170.0, card.max.y - 24.0)));
+        assert!(app.prefs.desktop_offered);
+        assert_eq!(app.desktop.as_ref().map(|d| (d.offer, d.entry.clone())), Some((false, Entry::None)));
+    }
+
+    #[test]
+    fn preferences_about_shows_the_folders_and_the_menu_entry_in_each_state() {
+        let ctx = egui::Context::default();
+        let mut app = App::with_context(&ctx, anicraft_engine::Session::default(), Some(PathBuf::from("unused.png")));
+        app.open_panel(Some("prefsabout"));
+        assert!(app.show_prefs && app.prefs_to_about);
+        let d = app.desktop.clone().unwrap();
+        frames(&ctx, &mut app, 3, vec![]);
+        assert!(!app.prefs_to_about, "scrolled once");
+        // Each state of the entry draws, and the actions move between them.
+        apply(&mut app, Act::Add);
+        assert_eq!(app.desktop.as_ref().map(|d| d.entry.clone()), Some(Entry::ThisCopy));
+        frames(&ctx, &mut app, 2, vec![]);
+        let other = d.appimage.with_file_name("AniCraft-other.AppImage");
+        std::fs::write(&other, b"").unwrap();
+        app.s.execute("desktop.integrate", &json!({"appimage": other.display().to_string(), "data_home": d.data_home.display().to_string(), "refresh": false})).unwrap();
+        start_with(&mut app, d.clone(), false);
+        assert!(matches!(app.desktop.as_ref().map(|d| &d.entry), Some(Entry::Other(_, true))));
+        frames(&ctx, &mut app, 2, vec![]);
+        apply(&mut app, Act::Remove);
+        assert_eq!(app.desktop.as_ref().map(|d| d.entry.clone()), Some(Entry::None));
+        let entry = d.data_home.join("applications/ai.storyteller.anicraft.desktop");
+        std::fs::create_dir_all(entry.parent().unwrap()).unwrap();
+        std::fs::write(&entry, "[Desktop Entry]\nName=Mine\n").unwrap();
+        start_with(&mut app, d.clone(), false);
+        assert_eq!(app.desktop.as_ref().map(|d| (d.entry.clone(), d.offer)), Some((Entry::Foreign, false)));
+        frames(&ctx, &mut app, 2, vec![]);
+        apply(&mut app, Act::Open(d.data_home.clone()));
+        let _ = std::fs::remove_dir_all(&d.data_home);
+        let _ = std::fs::remove_file(&other);
+        // Every folder About lists is named.
+        assert!(crate::platform::places().iter().all(|(name, dir)| !name.is_empty() && dir.is_some()));
+    }
 }

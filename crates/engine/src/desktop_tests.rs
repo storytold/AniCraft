@@ -129,7 +129,7 @@ fn an_entry_anicraft_did_not_write_is_never_replaced_or_removed() {
 #[test]
 fn system_folders_and_missing_appimages_are_refused() {
     let (root, appimage, data) = setup("refuse");
-    for system in ["/usr/share", "/usr/local/share", "/etc/xdg", "/opt", "/", "/var/lib/flatpak/exports/share"] {
+    for system in ["/usr/share", "/usr/local/share", "/etc/xdg", "/opt", "/", "/var/lib/flatpak/exports/share", "/var/lib/snapd/desktop"] {
         assert!(install(&appimage, Path::new(system)).is_err(), "{system}");
         assert!(uninstall(Path::new(system)).is_err(), "{system}");
     }
