@@ -179,7 +179,7 @@ fn every_command_namespace_has_a_plugin_policy() {
         let ns = c.id.split('.').next().unwrap_or("");
         let verdict = plugin_may_call(c.id);
         match ns {
-            "file" | "plugin" | "control" | "prefs" => assert!(verdict.is_err(), "{} must be refused", c.id),
+            "file" | "plugin" | "control" | "prefs" | "desktop" => assert!(verdict.is_err(), "{} must be refused", c.id),
             // Publish Settings (ADR 0060): read yes, change no (it says what Publish writes).
             "publish" => assert_eq!(verdict.is_ok(), c.id == "publish.settings_get", "{}", c.id),
             // Brushes (ADR 0068): list yes; your own brushes and brush set files no.

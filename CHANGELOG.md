@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+* **Portable copies and AppImage desktop integration** (ADR 0094, M8).
+  * **The Windows zip and the Linux tar.gz are portable**: preferences, autosaved work, logs,
+    plug-ins, templates, brushes, filter presets, workspaces and recent files stay in a `data`
+    folder beside AniCraft. A file named `anicraft-portable` next to the program (or next to
+    `AniCraft.app` or an `.AppImage`) is what makes a copy portable; delete it to use your user
+    folder. A portable folder that can't be written falls back to your user folder and says so.
+  * **Preferences › About** shows the version, whether this copy is installed or portable, and
+    every folder AniCraft keeps things in, each with an Open button.
+  * **AppImage: Add to Menu.** The first start from an AppImage offers once, in a card that
+    nothing waits on, to add AniCraft to your applications menu and open `.anicraft`, `.fla` and
+    `.xfl` files with it. Only `~/.local/share` changes; Preferences › About removes it again,
+    and the entry follows the AppImage when you move or update it. Headless:
+    `desktop.integrate`, `desktop.remove`, `desktop.status`.
+  * **Store readiness:** a Packaging lint job validates the Flatpak manifests, the AppStream
+    metainfo (`appstreamcli validate`), the desktop entry and any winget or MSIX manifests.
+    Nothing is submitted.
+
 * **Brushes and erasing, second slice: tilt, textured brushes, erasing inside symbols, profiles
   in the merge** (ADR 0093, M7).
   * **Pen tilt** shapes the Brush: it turns the tip with the way the pen leans and paints up

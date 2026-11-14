@@ -167,6 +167,9 @@ pub struct Prefs {
     /// Whether the rulers, grid and guides show and snap (ADR 0076), kept from session to
     /// session; where the guides are and how they look is the document's.
     pub aids: anicraft_engine::ViewAids,
+    /// The offer to add an AppImage to the applications menu was answered (ADR 0094): it is
+    /// made once; Preferences › About adds or removes the entry any time.
+    pub desktop_offered: bool,
 }
 
 /// Most publish presets kept, and the longest name one has.
@@ -233,6 +236,7 @@ impl Default for Prefs {
             test_movie_pos: None,
             workspaces: crate::dock::Workspaces::default(),
             aids: Default::default(),
+            desktop_offered: false,
         }
     }
 }
