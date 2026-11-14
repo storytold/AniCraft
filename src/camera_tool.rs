@@ -46,14 +46,21 @@ pub fn camera(app: &App) -> Option<Camera> {
 
 /// Whether the stage shows the movie through the camera this frame.
 pub fn previewing(app: &App) -> bool {
-    app.camera_preview && app.s.timeline().camera_layer().is_some()
+    app.camera_preview && app.s.timeline().camera_layer().is_some_and(|l| l.visible)
 }
 
 /// Picking the Camera tool adds a camera when the scene has none (as Animate does), once per
 /// pick: undoing the add leaves the tool in hand without adding it again.
 pub fn on_tool_change(app: &mut App) {
-    if app.tool == Tool::Camera && app.last_tool != Tool::Camera && app.s.timeline().camera_layer().is_none() && app.run("camera.add", json!({})).is_some() {
-        app.status_ok(tr!("Added a camera. Drag on the stage to pan it, turn it with the round handle, zoom with the wheel. {undo} to undo.", undo = app.undo_key()));
+    if app.tool == Tool::Camera && app.last_tool != Tool::Camera && app.s.timeline().camera_layer().is_none() {
+        crate::stage::commit_text(app);
+        if app.text_edit.is_some() {
+            app.tool = app.last_tool;
+            return;
+        }
+        if app.run("camera.add", json!({})).is_some() {
+            app.status_ok(tr!("Added a camera. Drag on the stage to pan it, turn it with the round handle, zoom with the wheel. {undo} to undo.", undo = app.undo_key()));
+        }
     }
     app.last_tool = app.tool;
 }
@@ -201,5 +208,144 @@ pub fn move_to(app: &mut App, last: &mut Vec2, cur: Vec2) {
     let s = back.apply_vector(d);
     if s.x.is_finite() && s.y.is_finite() {
         app.run("element.translate", json!({"dx": s.x, "dy": s.y}));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_app() -> App {
+        let ctx = egui::Context::default();
+        let session = anicraft_engine::Session::new(anicraft_engine::doc::Document::default());
+        App::with_context(&ctx, session, Some(std::path::PathBuf::from("unused.png")))
+    }
+
+    #[test]
+    fn previewing_requires_visible_camera_layer() {
+        let mut app = test_app();
+        assert!(!previewing(&app));
+
+        // Toggle camera preview on before camera exists.
+        app.toggle_camera_preview();
+        assert!(app.camera_preview);
+        assert!(!previewing(&app), "previewing is false when no camera layer exists");
+
+        // Add camera.
+        assert!(app.run("camera.add", json!({})).is_some());
+        assert!(previewing(&app), "previewing is true when camera layer is visible and camera_preview is on");
+
+        // Hide camera layer: camera is turned off, so previewing must be false (artwork editing unpaused).
+        let cam_id = app.s.timeline().camera_layer().expect("camera layer").id;
+        assert!(app.run("layer.toggle_visible", json!({"layer": cam_id.0})).is_some());
+        assert!(!app.s.timeline().camera_layer().expect("camera layer").visible);
+        assert!(!previewing(&app), "hiding the camera layer turns off camera preview so artwork can be edited");
+
+        // Unhide camera layer: camera preview returns.
+        assert!(app.run("layer.toggle_visible", json!({"layer": cam_id.0})).is_some());
+        assert!(app.s.timeline().camera_layer().expect("camera layer").visible);
+        assert!(previewing(&app), "unhiding the camera layer restores camera preview");
+    }
+
+    #[test]
+    fn toggling_camera_preview_commits_pending_text() {
+        let mut app = test_app();
+        app.text_edit = Some(crate::app::TextEditing {
+            at: egui::pos2(10.0, 20.0),
+            element: None,
+            text: "Hello Camera".to_string(),
+            original: String::new(),
+            focus: false,
+        });
+        assert!(app.text_edit.is_some());
+        app.toggle_camera_preview();
+        assert!(app.text_edit.is_none(), "pending text should be committed when toggling preview");
+        let active_layer = app.s.active_layer().expect("active layer").id;
+        let elements = app.s.elements_on(active_layer);
+        assert!(elements.iter().any(|e| matches!(&e.kind, anicraft_engine::doc::ElementKind::Text(t) if t.text == "Hello Camera")));
+    }
+
+    #[test]
+    fn picking_camera_tool_commits_pending_text_before_camera_add() {
+        let mut app = test_app();
+        let artwork_layer = app.s.active_layer().expect("artwork layer").id;
+        app.text_edit = Some(crate::app::TextEditing {
+            at: egui::pos2(15.0, 25.0),
+            element: None,
+            text: "Pre-Camera Text".to_string(),
+            original: String::new(),
+            focus: false,
+        });
+        app.tool = Tool::Camera;
+        on_tool_change(&mut app);
+        assert!(app.text_edit.is_none(), "pending text should be committed before camera layer creation");
+        let elements = app.s.elements_on(artwork_layer);
+        assert!(elements.iter().any(|e| matches!(&e.kind, anicraft_engine::doc::ElementKind::Text(t) if t.text == "Pre-Camera Text")));
+        assert!(app.s.timeline().camera_layer().is_some(), "camera layer was added");
+    }
+
+    #[test]
+    fn toggling_camera_preview_aborts_when_text_commit_fails() {
+        let mut app = test_app();
+        // Lock the active layer so text creation fails.
+        assert!(app.run("layer.toggle_lock", json!({})).is_some());
+        assert!(app.s.active_layer().expect("active layer").locked);
+
+        app.text_edit = Some(crate::app::TextEditing {
+            at: egui::pos2(10.0, 20.0),
+            element: None,
+            text: "Failed Text".to_string(),
+            original: String::new(),
+            focus: false,
+        });
+
+        app.toggle_camera_preview();
+        assert!(!app.camera_preview, "camera preview must not toggle on when text commit fails");
+        assert!(app.text_edit.is_some(), "draft must be retained when commit fails");
+    }
+
+    #[test]
+    fn picking_camera_tool_aborts_when_text_commit_fails() {
+        let mut app = test_app();
+        // Lock the active layer so text creation fails.
+        assert!(app.run("layer.toggle_lock", json!({})).is_some());
+        assert!(app.s.active_layer().expect("active layer").locked);
+
+        app.text_edit = Some(crate::app::TextEditing {
+            at: egui::pos2(15.0, 25.0),
+            element: None,
+            text: "Uncommittable Draft".to_string(),
+            original: String::new(),
+            focus: false,
+        });
+
+        app.tool = Tool::Camera;
+        on_tool_change(&mut app);
+        assert_eq!(app.tool, Tool::Select, "tool must revert to previous tool when text commit fails");
+        assert!(app.text_edit.is_some(), "draft must be retained");
+        assert!(app.s.timeline().camera_layer().is_none(), "camera layer must not be added when commit fails");
+    }
+
+    #[test]
+    fn commit_text_restores_draft_when_element_select_fails() {
+        let mut app = test_app();
+        // Create an existing text element on the layer.
+        assert!(app.run("text.create", json!({"text": "Original", "x": 0.0, "y": 0.0})).is_some());
+        let active_layer = app.s.active_layer().expect("active layer").id;
+        let elem_id = app.s.elements_on(active_layer)[0].id;
+
+        // Lock the layer so element.select returns None.
+        assert!(app.run("layer.toggle_lock", json!({})).is_some());
+
+        app.text_edit = Some(crate::app::TextEditing {
+            at: egui::pos2(0.0, 0.0),
+            element: Some(elem_id),
+            text: "Modified Text".to_string(),
+            original: "Original".to_string(),
+            focus: false,
+        });
+
+        crate::stage::commit_text(&mut app);
+        assert!(app.text_edit.is_some(), "draft must be restored when element selection fails");
     }
 }

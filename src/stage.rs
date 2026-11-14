@@ -752,7 +752,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                 }
                 Tool::Text if !panning => {
                     commit_text(app);
-                    if !open_text_at(app, sp, 3.0 / zoom.max(1e-3)) {
+                    if app.text_edit.is_none() && !open_text_at(app, sp, 3.0 / zoom.max(1e-3)) {
                         app.text_edit = Some(crate::app::TextEditing { at: sp, element: None, text: String::new(), original: String::new(), focus: true });
                     }
                 }
@@ -800,25 +800,27 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         && let Some(p) = resp.interact_pointer_pos()
     {
         commit_text(app);
-        let sp = to_stage(p);
-        let slop = 3.0 / zoom.max(1e-3);
-        if !open_text_at(app, sp, slop) {
-            match app.s.hit_test(to_v(sp), slop) {
-                // A symbol instance (ADR 0045), a group (ADR 0073) or a drawing object (ADR 0080)
-                // opens for editing in place.
-                Some((layer, id)) if app.s.elements_on(layer).iter().any(|e| e.id == id && anicraft_engine::editing::opens(e)) => {
-                    app.run("symbol.edit", json!({"id": id.0}));
+        if app.text_edit.is_none() {
+            let sp = to_stage(p);
+            let slop = 3.0 / zoom.max(1e-3);
+            if !open_text_at(app, sp, slop) {
+                match app.s.hit_test(to_v(sp), slop) {
+                    // A symbol instance (ADR 0045), a group (ADR 0073) or a drawing object (ADR 0080)
+                    // opens for editing in place.
+                    Some((layer, id)) if app.s.elements_on(layer).iter().any(|e| e.id == id && anicraft_engine::editing::opens(e)) => {
+                        app.run("symbol.edit", json!({"id": id.0}));
+                    }
+                    // Raw artwork (ADR 0031): a stroke and the strokes joined to it, or a fill and
+                    // its outline.
+                    Some(_) => {
+                        app.run("element.select_connected", json!({"x": sp.x, "y": sp.y, "add": shift, "slop": slop}));
+                    }
+                    // Empty space inside a symbol or group goes back up a level, as in Animate.
+                    None if !app.s.editing.is_empty() => {
+                        app.run("symbol.exit", json!({}));
+                    }
+                    None => {}
                 }
-                // Raw artwork (ADR 0031): a stroke and the strokes joined to it, or a fill and
-                // its outline.
-                Some(_) => {
-                    app.run("element.select_connected", json!({"x": sp.x, "y": sp.y, "add": shift, "slop": slop}));
-                }
-                // Empty space inside a symbol or group goes back up a level, as in Animate.
-                None if !app.s.editing.is_empty() => {
-                    app.run("symbol.exit", json!({}));
-                }
-                None => {}
             }
         }
     }
@@ -1825,19 +1827,141 @@ mod pattern_tests {
         assert_eq!(at((3.0, 3.0)), Color32::BLUE);
         assert_eq!(at((1.4, 0.0)), Color32::TRANSPARENT, "space between dots");
     }
+
+    #[test]
+    fn text_tool_click_preserves_draft_when_commit_fails() {
+        let ctx = egui::Context::default();
+        let session = anicraft_engine::Session::new(anicraft_engine::doc::Document::default());
+        let mut app = App::with_context(&ctx, session, Some(std::path::PathBuf::from("unused.png")));
+
+        // Lock the active layer so text creation fails.
+        assert!(app.run("layer.toggle_lock", json!({})).is_some());
+        assert!(app.s.active_layer().expect("active layer").locked);
+
+        app.text_edit = Some(crate::app::TextEditing {
+            at: pos2(10.0, 10.0),
+            element: None,
+            text: "Preserved Draft".to_string(),
+            original: String::new(),
+            focus: false,
+        });
+        app.tool = Tool::Text;
+
+        let click_pos = pos2(200.0, 200.0);
+        let input = egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1600.0, 940.0))),
+            events: vec![
+                egui::Event::PointerMoved(click_pos),
+                egui::Event::PointerButton { pos: click_pos, button: egui::PointerButton::Primary, pressed: true, modifiers: Modifiers::NONE },
+                egui::Event::PointerButton { pos: click_pos, button: egui::PointerButton::Primary, pressed: false, modifiers: Modifiers::NONE },
+            ],
+            ..Default::default()
+        };
+        let mut out = ctx.run_ui(input, |ui| {
+            show(&mut app, ui);
+        });
+        out.textures_delta.clear();
+
+        assert!(app.text_edit.is_some(), "draft must be retained when commit fails");
+        assert_eq!(app.text_edit.as_ref().unwrap().text, "Preserved Draft", "draft must not be replaced with empty text");
+    }
+
+    #[test]
+    fn selection_double_click_preserves_draft_when_commit_fails() {
+        let ctx = egui::Context::default();
+        let session = anicraft_engine::Session::new(anicraft_engine::doc::sample::demo());
+        let mut app = App::with_context(&ctx, session, Some(std::path::PathBuf::from("unused.png")));
+
+        // Start inside an editable symbol so double-clicking empty space would otherwise call symbol.exit.
+        let star = app.s.doc.library.iter().find(|x| x.name == "Star").unwrap().id;
+        assert!(app.run("symbol.edit", json!({"symbol": star.0})).is_some());
+        assert_eq!(app.s.editing.len(), 1, "must be editing symbol");
+
+        // Lock the active layer so text creation fails.
+        assert!(app.run("layer.toggle_lock", json!({})).is_some());
+        assert!(app.s.active_layer().expect("active layer").locked);
+
+        app.text_edit = Some(crate::app::TextEditing {
+            at: pos2(10.0, 10.0),
+            element: None,
+            text: "Important Text".to_string(),
+            original: String::new(),
+            focus: false,
+        });
+        app.tool = Tool::Select;
+
+        let click_pos = pos2(200.0, 200.0);
+        let input1 = egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1600.0, 940.0))),
+            time: Some(1.0),
+            events: vec![
+                egui::Event::PointerMoved(click_pos),
+                egui::Event::PointerButton { pos: click_pos, button: egui::PointerButton::Primary, pressed: true, modifiers: Modifiers::NONE },
+                egui::Event::PointerButton { pos: click_pos, button: egui::PointerButton::Primary, pressed: false, modifiers: Modifiers::NONE },
+            ],
+            ..Default::default()
+        };
+        let mut out1 = ctx.run_ui(input1, |ui| {
+            show(&mut app, ui);
+        });
+        out1.textures_delta.clear();
+        let input2 = egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1600.0, 940.0))),
+            time: Some(1.1),
+            events: vec![
+                egui::Event::PointerButton { pos: click_pos, button: egui::PointerButton::Primary, pressed: true, modifiers: Modifiers::NONE },
+                egui::Event::PointerButton { pos: click_pos, button: egui::PointerButton::Primary, pressed: false, modifiers: Modifiers::NONE },
+            ],
+            ..Default::default()
+        };
+        let mut out2 = ctx.run_ui(input2, |ui| {
+            show(&mut app, ui);
+        });
+        out2.textures_delta.clear();
+
+        assert!(app.text_edit.is_some(), "draft must be retained when commit fails");
+        assert_eq!(app.text_edit.as_ref().unwrap().text, "Important Text");
+        assert_eq!(app.s.editing.len(), 1, "editing level must remain unchanged (symbol.exit not called)");
+    }
+
+    #[test]
+    fn open_text_at_aborts_when_draft_is_pending() {
+        let ctx = egui::Context::default();
+        let session = anicraft_engine::Session::new(anicraft_engine::doc::Document::default());
+        let mut app = App::with_context(&ctx, session, Some(std::path::PathBuf::from("unused.png")));
+
+        // Create an existing text element.
+        assert!(app.run("text.create", json!({"text": "Existing", "x": 0.0, "y": 0.0})).is_some());
+
+        app.text_edit = Some(crate::app::TextEditing {
+            at: pos2(50.0, 50.0),
+            element: None,
+            text: "Pending Draft".to_string(),
+            original: String::new(),
+            focus: false,
+        });
+
+        assert!(!open_text_at(&mut app, pos2(0.0, 0.0), 10.0), "open_text_at must refuse when draft is pending");
+        assert_eq!(app.text_edit.as_ref().unwrap().text, "Pending Draft");
+    }
 }
 
 // ----- text ----------------------------------------------------------------------------------------
 
 /// Starts editing the text element under stage point `sp`, if there is one.
 fn open_text_at(app: &mut App, sp: Pos2, tolerance: f32) -> bool {
+    if app.text_edit.is_some() {
+        return false;
+    }
     let Some((_, id)) = app.s.hit_test(to_v(sp), tolerance) else { return false };
     let found = app.s.visible_elements().into_iter().find(|e| e.id == id).and_then(|e| match &e.kind {
         anicraft_engine::doc::ElementKind::Text(t) => Some((e.transform.apply(Vec2::ZERO), t.text.clone())),
         _ => None,
     });
     let Some((at, text)) = found else { return false };
-    app.run("element.select", json!({"ids": [id.0]}));
+    if app.run("element.select", json!({"ids": [id.0]})).is_none() {
+        return false;
+    }
     app.text_edit = Some(crate::app::TextEditing { at: pos2(at.x, at.y), element: Some(id), original: text.clone(), text, focus: true });
     true
 }
@@ -1849,15 +1973,20 @@ pub fn commit_text(app: &mut App) {
     match te.element {
         None if te.text.trim().is_empty() => {}
         None => {
-            app.run("text.create", json!({"text": te.text, "x": te.at.x, "y": te.at.y}));
+            if app.run("text.create", json!({"text": te.text, "x": te.at.x, "y": te.at.y})).is_none() {
+                app.text_edit = Some(te);
+            }
         }
         Some(_) if te.text == te.original => {}
         Some(id) => {
-            app.run("element.select", json!({"ids": [id.0]}));
+            if app.run("element.select", json!({"ids": [id.0]})).is_none() {
+                app.text_edit = Some(te);
+                return;
+            }
             if te.text.trim().is_empty() {
                 app.run("edit.delete", json!({}));
-            } else {
-                app.run("text.edit", json!({"text": te.text}));
+            } else if app.run("text.edit", json!({"text": te.text})).is_none() {
+                app.text_edit = Some(te);
             }
         }
     }
