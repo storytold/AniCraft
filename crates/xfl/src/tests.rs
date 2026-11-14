@@ -4,6 +4,14 @@ use crate::import::{XflError, import_with};
 use anicraft_doc::{ElementKind, LayerKind, LoopMode, Paint, Rgba, SymbolKind, evaluate};
 use std::collections::HashMap;
 
+#[test]
+fn shared_zip_errors_keep_anicraft_import_wording() {
+    let entry = XflError::from(crate::zip::ZipError::Unsupported("a.xml".into(), "encryption"));
+    assert_eq!(entry.to_string(), "'a.xml' uses a zip feature AniCraft can't read (encryption)");
+    let archive = XflError::from(crate::zip::ZipError::UnsupportedArchive("split across several files"));
+    assert_eq!(archive.to_string(), "the archive uses a zip feature AniCraft can't read (split across several files)");
+}
+
 const DOC: &str = r##"<DOMDocument xmlns="http://ns.adobe.com/xfl/2008/" width="640" height="360" frameRate="30" backgroundColor="#336699">
   <symbols><Include href="Characters/Ball.xml"/><Include href="Missing.xml"/></symbols>
   <timelines>

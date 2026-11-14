@@ -45,12 +45,25 @@ struct RawHint {
 pub enum XflError {
     #[error("{0}")]
     Xml(#[from] xml::XmlError),
-    #[error("{0}")]
+    #[error("{}", ani_zip_error(.0))]
     Zip(#[from] crate::zip::ZipError),
     #[error("I/O: {0}")]
     Io(#[from] std::io::Error),
     #[error("this isn't an Animate document: {0}")]
     NotXfl(String),
+}
+
+/// Keep AniCraft's established import diagnostics while the shared XFL reader stays neutral.
+fn ani_zip_error(error: &crate::zip::ZipError) -> String {
+    match error {
+        crate::zip::ZipError::UnsupportedArchive(feature) => {
+            format!("the archive uses a zip feature AniCraft can't read ({feature})")
+        }
+        crate::zip::ZipError::Unsupported(name, feature) => {
+            format!("'{name}' uses a zip feature AniCraft can't read ({feature})")
+        }
+        other => other.to_string(),
+    }
 }
 
 /// What the import couldn't bring across, by kind ("3 bitmaps"), the scripts it brought that

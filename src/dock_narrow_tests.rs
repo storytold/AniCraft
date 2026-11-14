@@ -81,4 +81,3 @@ fn every_panel_fits_the_narrowest_dock() {
     }
     assert!(found.is_empty(), "{} widgets past a panel's edge at {MIN_SIDE} pt:\n{}", found.len(), found.join("\n"));
 }
-

@@ -335,9 +335,10 @@ fn scripts_linkage_and_the_document_class_come_across_verbatim() {
     let source = |tl: &anicraft_doc::Timeline, key: usize| tl.layers[0].keyframes[key].script.as_ref().and_then(|s| s.source()).cloned();
     let first = source(doc.timeline(0), 0).unwrap();
     assert_eq!(first.language, anicraft_doc::Language::ActionScript3);
-    // Byte for byte what the CDATA holds: tabs, blank lines, < & ' " and all.
+    // CDATA's payload, including tabs, blank lines, < & ' " and all. XML normalizes CRLF to LF;
+    // the source fixture can be checked out with CRLF on Windows.
     let file = String::from_utf8(files("scripts")["DOMDocument.xml"].clone()).unwrap();
-    let cdata = file.split("<![CDATA[").nth(1).and_then(|s| s.split("]]>").next()).unwrap();
+    let cdata = file.split("<![CDATA[").nth(1).and_then(|s| s.split("]]>").next()).unwrap().replace("\r\n", "\n");
     assert_eq!(first.text, cdata);
     assert!(first.text.contains("\tif (hero_mc.currentFrame < 2 && e.target != null) {") && first.lines() == 10, "{:?}", first.text);
     assert_eq!(source(doc.timeline(0), 1).unwrap().text.replace("\r\n", "\n"), "hero_mc.gotoAndStop(2);\ntrace(\"Walked > 0 & done\");");
