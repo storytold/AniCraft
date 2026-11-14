@@ -3,7 +3,7 @@
 //!
 //! Frames are offsets into the span, as everywhere in a [`MotionTween`].
 
-use super::{MotionTween, Pin, Property, PropertyKey, Props, Track};
+use super::{MotionTween, Pin, Property, PropertyKey, Props, Track, own_value};
 use crate::{Easing, Element};
 
 /// A property key picked for retiming: its property and its frame (offset into the span).
@@ -162,12 +162,21 @@ impl MotionTween {
         if self.path.is_some() || next.path.is_some() || frames == 0 {
             return None;
         }
-        let pb = Props::of(next_base);
         let last = frames - 1;
         let mut tracks = Vec::new();
-        for p in Property::ALL {
+        // Every property, and the filters' numbers both objects have (ADR 0092; a filter only
+        // one of them has can't be joined, and its track goes).
+        let mut props: Vec<Property> = Property::ALL.to_vec();
+        for t in self.tracks.iter().chain(&next.tracks).filter(|t| t.property.is_filter()) {
+            if !props.contains(&t.property) && own_value(base, t.property).is_some() && own_value(next_base, t.property).is_some() {
+                props.push(t.property);
+            }
+        }
+        props.sort_by_key(|p| p.index());
+        for p in props {
             let (ta, tb) = (self.track(p), next.track(p));
-            if ta.is_none() && tb.is_none() && (pa.get(p) - pb.get(p)).abs() <= SAME {
+            let (va, vb) = (own_value(base, p).unwrap_or(0.0), own_value(next_base, p).unwrap_or(0.0));
+            if ta.is_none() && tb.is_none() && (va - vb).abs() <= SAME {
                 continue;
             }
             // This span's part: its keys before the cut, and its value on its last frame when
@@ -179,18 +188,18 @@ impl MotionTween {
                     if (v.is_empty() || runs_on) && t.key_at(last).is_none() {
                         let at = if v.is_empty() { 0 } else { last };
                         let ease = t.segment_at(at).and_then(|i| t.keys.get(i)).map_or(Easing::Linear, |k| k.ease.clone());
-                        v.push(PropertyKey { frame: at, value: t.value_at(at as f32).unwrap_or(pa.get(p)), ease });
+                        v.push(PropertyKey { frame: at, value: t.value_at(at as f32).unwrap_or(va), ease });
                     }
                     v
                 }
-                None => vec![PropertyKey { frame: 0, value: pa.get(p), ease: Easing::Linear }],
+                None => vec![PropertyKey { frame: 0, value: va, ease: Easing::Linear }],
             };
-            let end = keys.last().map_or(pa.get(p), |k| k.value);
+            let end = keys.last().map_or(va, |k| k.value);
             // The next span's part, after the cut. Its rotation turns on from where this one
             // ended (the same look, whole turns added), so the curve doesn't spin back.
             let mut after: Vec<PropertyKey> = match tb {
                 Some(t) => t.keys.iter().map(|k| PropertyKey { frame: k.frame.saturating_add(frames), ..k.clone() }).collect(),
-                None => vec![PropertyKey { frame: frames, value: pb.get(p), ease: Easing::Linear }],
+                None => vec![PropertyKey { frame: frames, value: vb, ease: Easing::Linear }],
             };
             if p == Property::Rotation
                 && let Some(first) = after.first()

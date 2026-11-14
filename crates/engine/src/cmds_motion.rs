@@ -7,6 +7,10 @@
 //! [`finish_edit`] turns whatever changed in its transform or colour effect into property keys
 //! and puts the base object back (with any other change, a new fill say, kept).
 //!
+//! Filters (ADR 0092): a filter's numbers tween as properties too, addressed by the filter's place
+//! (`filter.0.blur_x`). An edit of a filter's number at the playhead keys it there; an edit that
+//! reorders, removes or adds filters takes the tracks along with their filters.
+//!
 //! On a motion path, moving the object at a frame pins the path there (ADR 0049): the anchor
 //! pinned to that frame moves (an end, at the first or last position key), or a new anchor is
 //! added where the object is, pinned to the frame, and moved; after the last position key the
@@ -15,7 +19,7 @@
 use crate::cmds_timeline::target;
 use crate::params::*;
 use crate::{CommandSpec, EngineError, Result, Session};
-use anicraft_doc::{Element, ElementId, Keyframe, Layer, LayerId, LayerKind, MotionTween, Pin, PinError, Property, Props};
+use anicraft_doc::{Element, ElementId, ElementKind, FilterEntry, Keyframe, Layer, LayerId, LayerKind, MotionTween, Pin, PinError, Property, Props, filter_properties, own_value};
 use anicraft_geom::{Affine, Vec2};
 use serde_json::{Value, json};
 use std::sync::Arc;
@@ -23,7 +27,7 @@ use std::sync::Arc;
 pub fn specs() -> Vec<CommandSpec> {
     let c = |id, label, menu, shortcut, params, mutates, run| CommandSpec { id, label, menu, shortcut, params, mutates, run };
     vec![
-        c("motion.set_key", "Property Keyframe", "", None, "{property: x|y|scale_x|scale_y|rotation|skew|alpha|brightness|tint (amount)|tint_red|tint_green|tint_blue (0..255)|red_multiplier|green_multiplier|blue_multiplier|alpha_multiplier (%)|red_offset|green_offset|blue_offset|alpha_offset (-255..255), value (px, %, °), frame?, layer?} (colour properties of several styles compose into Advanced, ADR 0056)", true, set_key as crate::RunFn),
+        c("motion.set_key", "Property Keyframe", "", None, "{property: x|y|scale_x|scale_y|rotation|skew|alpha|brightness|tint (amount)|tint_red|tint_green|tint_blue (0..255)|red_multiplier|green_multiplier|blue_multiplier|alpha_multiplier (%)|red_offset|green_offset|blue_offset|alpha_offset (-255..255)|filter.<slot>.<blur_x|blur_y|strength (%)|angle|distance|brightness|contrast|saturation|hue> (a number of the object's filter at that place, 0 the first; ADR 0092), value (px, %, °), frame?, layer?} (colour properties of several styles compose into Advanced, ADR 0056)", true, set_key as crate::RunFn),
         c("motion.remove_key", "Remove Property Keyframe", "", None, "{property? (default: every property), frame?, layer?}", true, remove_key),
         c("motion.set_ease", "Property Ease", "", None, "{easing (as timeline.set_easing takes it, saved eases too), property? (default: every property), frame? (inside the segment), layer?}", true, set_ease),
         c("motion.info", "Motion Tween", "", None, "{layer?, frame?} → the span's properties, keys, eases and values at the frame, its motion path, its anchors pinned to frames (pins) and where the object is", false, info),
@@ -120,9 +124,13 @@ pub(crate) fn finish_edit(s: &mut Session, e: MotionEdit) {
             m.set_key(p, e.offset, v, base_props.get(p));
         }
     }
-    let tracks_xf = m.tracks.iter().any(|t| t.property.style().is_none());
+    let tracks_xf = m.tracks.iter().any(|t| t.property.is_transform());
     let tracks_color = m.tracks.iter().any(|t| t.property.style().is_some());
+    let filters = key_filters(m, &e, &after);
     let mut base = after;
+    if let (Some(f), ElementKind::Symbol { filters: slot, .. }) = (filters, &mut base.kind) {
+        *slot = f;
+    }
     // Exact where nothing is keyed on the first frame: the edited object is the new base.
     base.transform = match (base_xf, e.offset == 0 && !tracks_xf) {
         (true, true) => base.transform,
@@ -138,6 +146,67 @@ pub(crate) fn finish_edit(s: &mut Session, e: MotionEdit) {
     if let Some(slot) = kf.elements.get_mut(idx) {
         *slot = Arc::new(base);
     }
+}
+
+/// The filters of an edited target (ADR 0092). The command saw them as they look at the
+/// playhead (`e.before`) and left them as `after` has them. When the list kept its shape (the
+/// same kinds in the same order), each number it changed becomes a key at the playhead (on the
+/// span's first frame, an untracked number changes the object's own), and the tracked numbers
+/// keep the object's own values underneath. When the shape changed (filters reordered, removed
+/// or added), each filter is found again by what it holds, its tracks go where it went, and
+/// those of filters that went go too. The base's new list, or `None` when there are no filters
+/// to look after.
+fn key_filters(m: &mut MotionTween, e: &MotionEdit, after: &Element) -> Option<Vec<FilterEntry>> {
+    let list = |el: &Element| match &el.kind {
+        ElementKind::Symbol { filters, .. } => Some(filters.clone()),
+        _ => None,
+    };
+    let (before, base, mut now) = (list(&e.before)?, list(&e.base)?, list(after)?);
+    if !anicraft_doc::filters_pair_up(&before, &now) {
+        // Where each filter went: the first one left that holds the same.
+        let mut taken = vec![false; now.len()];
+        let map: Vec<Option<usize>> = before
+            .iter()
+            .map(|b| {
+                let i = now.iter().enumerate().position(|(i, n)| !taken.get(i).copied().unwrap_or(true) && n.filter == b.filter)?;
+                if let Some(t) = taken.get_mut(i) {
+                    *t = true;
+                }
+                Some(i)
+            })
+            .collect();
+        m.remap_filters(&map);
+        // A filter that moved is the base's underneath (with its switch as the edit left it),
+        // not the playhead's.
+        for (old, new) in map.iter().enumerate() {
+            if let (Some(n), Some(b)) = (new, base.get(old))
+                && let Some(slot) = now.get_mut(*n)
+            {
+                let enabled = slot.enabled;
+                *slot = FilterEntry { enabled, ..b.clone() };
+            }
+        }
+        return Some(now);
+    }
+    for (slot, (was, is)) in before.iter().zip(&now).enumerate().take(usize::from(anicraft_doc::MAX_FILTER_SLOTS)) {
+        for &param in is.filter.params() {
+            let p = Property::Filter(anicraft_doc::FilterProp { slot: slot as u8, param });
+            let (Some(v0), Some(v1)) = (was.filter.param(param), is.filter.param(param)) else { continue };
+            if (v1 - v0).abs() > 1e-4 && !(e.offset == 0 && m.track(p).is_none()) {
+                let own = base.get(slot).and_then(|b| b.filter.param(param)).unwrap_or(v0);
+                m.set_key(p, e.offset, v1, own);
+            }
+        }
+    }
+    // Tracked numbers: the object's own underneath (the curves give the rest).
+    for t in &m.tracks {
+        if let Some(f) = t.property.filter()
+            && let (Some(slot), Some(own)) = (now.get_mut(usize::from(f.slot)), base.get(usize::from(f.slot)).and_then(|b| b.filter.param(f.param)))
+        {
+            slot.filter.set_param(f.param, own);
+        }
+    }
+    Some(now)
 }
 
 /// Most bends [`move_on_path`] makes to land the object where it was put off the path; each
@@ -516,8 +585,16 @@ pub(crate) fn key_all_at(layer: &mut Layer, frame: u32) -> bool {
     }
     let offset = frame - kf.start;
     let Some(m) = kf.motion.as_mut() else { return false };
-    let Some(base) = m.target_index(&kf.elements).and_then(|t| kf.elements.get(t)).map(|e| Props::of(e)) else { return true };
+    let Some(target) = m.target_index(&kf.elements).and_then(|t| kf.elements.get(t)).cloned() else { return true };
+    let base = Props::of(&target);
     let now = m.props_at(&base, offset as f32);
+    // The filters' numbers too (ADR 0092), as they are on that frame.
+    let at = m.apply(&target, offset as f32);
+    for p in filter_properties(&target) {
+        if let (Some(v), Some(own)) = (own_value(&at, p), own_value(&target, p)) {
+            m.set_key(p, offset, v, own);
+        }
+    }
     // On a motion path the frame's place is an anchor pinned to it (ADR 0049), where the
     // object is: nothing moves on this frame.
     let pinned = m.path.is_some() && m.pin_here(offset, &base).is_ok();
@@ -629,8 +706,8 @@ fn property(p: &Value) -> Result<Option<Property>> {
     match opt_str(p, "property")? {
         None => Ok(None),
         Some(k) => Property::from_key(k).map(Some).ok_or_else(|| {
-            let all: Vec<&str> = Property::ALL.iter().map(|p| p.key()).collect();
-            EngineError::Param(format!("unknown property '{k}' ({})", all.join(", ")))
+            let all: Vec<String> = Property::ALL.iter().map(|p| p.key().into_owned()).collect();
+            EngineError::Param(format!("unknown property '{k}' ({}, or filter.<slot>.<blur_x|blur_y|strength|angle|distance|brightness|contrast|saturation|hue>, slot 0 to 15)", all.join(", ")))
         }),
     }
 }
@@ -643,8 +720,19 @@ fn set_key(s: &mut Session, p: &Value) -> Result<Value> {
         return Err(EngineError::Param(format!("{} must be between {} and {} {}", prop.label(), r.start(), r.end(), prop.unit())));
     }
     let (kf, offset) = motion_span(s, p)?;
-    let base = kf.motion.as_ref().and_then(|m| m.target_index(&kf.elements)).and_then(|i| kf.elements.get(i)).map(|e| Props::of(e));
-    let base = base.ok_or_else(|| EngineError::State("the motion tween's object is no longer on its keyframe".into()))?;
+    let target = kf.motion.as_ref().and_then(|m| m.target_index(&kf.elements)).and_then(|i| kf.elements.get(i)).cloned();
+    let target = target.ok_or_else(|| EngineError::State("the motion tween's object is no longer on its keyframe".into()))?;
+    let base = Props::of(&target);
+    let own = own_value(&target, prop).ok_or_else(|| match prop.filter() {
+        Some(f) => EngineError::State(match &target.kind {
+            ElementKind::Symbol { filters, .. } => match filters.get(usize::from(f.slot)) {
+                Some(e) => format!("filter {} of the tween's object is a {}, which has no {}", f.slot, e.filter.label(), f.param.label()),
+                None => format!("the tween's object has no filter {} (it has {}; 0 is the first)", f.slot, filters.len()),
+            },
+            _ => "filters apply to movie clip and button instances: the tween's object has none".into(),
+        }),
+        None => EngineError::State("the motion tween's object has no such property".into()),
+    })?;
     let (start, last) = (kf.start, kf.duration.saturating_sub(1));
     let m = kf.motion.as_mut().ok_or_else(|| EngineError::State("no motion tween here".into()))?;
     // On a path, the X/Y keys of a pinned frame are its anchor's place: setting one moves the
@@ -658,7 +746,7 @@ fn set_key(s: &mut Session, p: &Value) -> Result<Value> {
         }
         return Ok(json!({"property": prop.key(), "frame": start + offset, "value": value, "anchor": pin.anchor}));
     }
-    m.set_key(prop, offset, value, base.get(prop));
+    m.set_key(prop, offset, value, own);
     Ok(json!({"property": prop.key(), "frame": start + offset, "value": value}))
 }
 
@@ -669,7 +757,8 @@ fn remove_key(s: &mut Session, p: &Value) -> Result<Value> {
     let m = kf.motion.as_mut().ok_or_else(|| EngineError::State("no motion tween here".into()))?;
     // Removing a pinned frame's X or Y key lets the pin go, with both keys (ADR 0049).
     let pin = m.live_pins().into_iter().find(|q| q.frame == offset).filter(|_| only.is_none_or(|o| matches!(o, Property::X | Property::Y)));
-    let mut removed: Vec<&str> = Property::ALL.into_iter().filter(|x| only.is_none_or(|o| o == *x)).filter(|x| m.remove_key(*x, offset)).map(Property::key).collect();
+    let keyed: Vec<Property> = m.tracks.iter().map(|t| t.property).collect();
+    let mut removed: Vec<std::borrow::Cow<'static, str>> = keyed.into_iter().filter(|x| only.is_none_or(|o| o == *x)).filter(|x| m.remove_key(*x, offset)).map(Property::key).collect();
     if pin.is_some() {
         for k in [Property::X.key(), Property::Y.key()] {
             if !removed.contains(&k) {
@@ -709,17 +798,36 @@ fn info(s: &mut Session, p: &Value) -> Result<Value> {
     let layer = s.timeline().layer(lid).ok_or_else(|| EngineError::State(format!("no layer with id {}", lid.0)))?;
     let kf = layer.keyframe_at(frame).ok_or_else(|| EngineError::State(format!("frame {} is empty on this layer", frame + 1)))?;
     let m = kf.motion.as_ref().ok_or_else(|| EngineError::State(format!("frame {} is not in a motion tween", frame + 1)))?;
-    let base = m.target_index(&kf.elements).and_then(|i| kf.elements.get(i)).map(|e| Props::of(e));
+    let target = m.target_index(&kf.elements).and_then(|i| kf.elements.get(i));
+    let base = target.map(|e| Props::of(e));
     let now = base.map(|b| m.props_at(&b, (frame - kf.start) as f32));
+    let filter_of = |slot: u8| match target.map(|e| &e.kind) {
+        Some(ElementKind::Symbol { filters, .. }) => filters.get(usize::from(slot)).map(|e| e.filter.label()),
+        _ => None,
+    };
     let tracks: Vec<Value> = m
         .tracks
         .iter()
         .map(|t| {
             let keys: Vec<Value> = t.keys.iter().map(|k| json!({"frame": kf.start + k.frame, "value": k.value, "ease": k.ease.label(), "easing": easing_json(&k.ease), "bezier": k.ease.as_bezier()})).collect();
-            json!({"property": t.property.key(), "label": t.property.label(), "unit": t.property.unit(), "keys": keys})
+            let mut v = json!({"property": t.property.key(), "label": t.property.label(), "unit": t.property.unit(), "keys": keys});
+            // A filter's number: which filter (ADR 0092); its kind `null` when it isn't there now.
+            if let Some(f) = t.property.filter() {
+                v["filter"] = json!({"slot": f.slot, "kind": filter_of(f.slot)});
+            }
+            v
         })
         .collect();
-    let values: serde_json::Map<String, Value> = Property::ALL.iter().filter_map(|p| now.map(|n| (p.key().to_string(), json!(n.get(*p))))).collect();
+    let mut values: serde_json::Map<String, Value> = Property::ALL.iter().filter_map(|p| now.map(|n| (p.key().into_owned(), json!(n.get(*p))))).collect();
+    // And the filters' numbers at the frame.
+    if let Some(e) = target {
+        let at = m.apply(e, (frame - kf.start) as f32);
+        for p in filter_properties(e) {
+            if let Some(v) = own_value(&at, p) {
+                values.insert(p.key().into_owned(), json!(v));
+            }
+        }
+    }
     // Where the object is (on a motion path the X/Y values are its timing, not its place).
     let position = m.target_index(&kf.elements).and_then(|i| kf.elements.get(i)).map(|e| m.apply(e, (frame - kf.start) as f32).transform.translation()).map(|q| json!([q.x, q.y]));
     let path = m.path.as_ref().map(|p| p.to_svg());
